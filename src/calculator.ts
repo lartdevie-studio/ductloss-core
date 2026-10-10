@@ -7,8 +7,14 @@ import type {
   SecondaryMover,
   FlowSide,
 } from './types'
-import { bendEquivLength90, type DesignCoefficients } from './coefficients'
-import { findAncestorFan, pathFromRoot, effectiveDiameterMm } from './tree'
+import { bendEquivLength90, bendZeta, type DesignCoefficients } from './coefficients'
+import { airKinematicViscosity, colebrookLambda } from './physics'
+
+/** 計算の環境（SPEC.md §3）。粗さから λ を求めるときの気温（動粘性係数に使う）。省くと 20℃ */
+export interface CalcEnv {
+  tempC?: number
+}
+import { findAncestorFan, pathFromRoot, effectiveDiameterMm, reducerDiameters } from './tree'
 
 // ─────────────────────────────────────────────────────────────
 // 基礎式（動圧 q = ρv²/2・ダルシー・ワイスバッハ・局部損失 ζ·q。SPEC.md §3）
@@ -46,10 +52,10 @@ export function bendEquivLength(coef: DesignCoefficients, diameterMm: number, an
  * params.bends が設定されていればそれ（個数>0のみ）、無ければ旧 bendAngleDeg/bendCount を1種として扱う。
  */
 export function ductBends(params: {
-  bends?: { angleDeg: number; count: number }[]
+  bends?: { angleDeg: number; count: number; shape?: string | null; zeta?: number | null }[]
   bendAngleDeg: number
   bendCount: number
-}): { angleDeg: number; count: number }[] {
+}): { angleDeg: number; count: number; shape?: string | null; zeta?: number | null }[] {
   if (params.bends && params.bends.length > 0) {
     return params.bends.filter(b => b && b.count > 0)
   }
@@ -75,6 +81,7 @@ export function calcNodeResult(
   node: DuctNode,
   flowQh: number,
   rho: number,
+  env: CalcEnv = {},
 ): NodeResult {
   switch (node.params.kind) {
     case 'fan':
@@ -87,11 +94,46 @@ export function calcNodeResult(
       // 以前は送風機の既定値が未設定だと NaN、null だと 0 になり、必要静圧が黙って 0 Pa になっていた
       const fan = findAncestorFan(nodes, node.id)
       const fanLambda = fan?.params.kind === 'fan' ? fan.params.defaultLambda : undefined
-      const effectiveLambda = usableLambda(lambda) ?? usableLambda(fanLambda) ?? coef.lambda
+      const own = usableLambda(lambda)
+      const fromFan = own == null ? usableLambda(fanLambda) : undefined
+      // 直管にも送風機にも λ が無いとき: 粗さの係数なら Colebrook、λ 一定の係数なら係数の λ
+      let effectiveLambda: number
+      let lambdaSource: 'duct' | 'fan' | 'coefficients' | 'roughness'
+      let reynolds: number | undefined
+      let material: string | undefined
+      if (own != null) { effectiveLambda = own; lambdaSource = 'duct' }
+      else if (fromFan != null) { effectiveLambda = fromFan; lambdaSource = 'fan' }
+      else if (coef.friction?.model === 'roughness') {
+        const key = node.params.material && coef.friction.materials[node.params.material] ? node.params.material : coef.friction.defaultMaterial
+        const mat = coef.friction.materials[key]
+        reynolds = v * (diameterMm / 1000) / airKinematicViscosity(env.tempC ?? 20, rho)
+        effectiveLambda = colebrookLambda(reynolds, (mat?.roughnessMm ?? 0) / diameterMm)
+        lambdaSource = 'roughness'
+        material = key
+      } else { effectiveLambda = coef.lambda; lambdaSource = 'coefficients' }
       const dpPerMeter = frictionPerMeter(effectiveLambda, diameterMm, q)
+      if (coef.bend?.model === 'zeta') {
+        // 曲がりは λ によらない局部損失（ζ90 × 角度の補正 × 個数 × q）。直管の長さ L は曲がりを含む中心線の長さとする
+        const bendZetaSum = ductBends(node.params).reduce((s, b) => s + bendZeta(coef, b) * b.count, 0)
+        const frictionPa = dpPerMeter * lengthM
+        const bendPa = bendZetaSum * q
+        return {
+          flowQh, velocity: v, q, dpPerMeter, lossPa: frictionPa + bendPa,
+          duct: { lambda: effectiveLambda, lambdaSource, reynolds, material, frictionPa, bendPa, bendModel: 'zeta', bendLengthM: 0, bendZeta: bendZetaSum, equivLengthM: lengthM },
+        }
+      }
       // 曲がりは最大3種（bends）の相当長を合算。旧データは bendAngleDeg/bendCount を1種扱い。
-      const lEquiv = lengthM + ductBendEquivLength(coef, diameterMm, node.params)
-      return { flowQh, velocity: v, q, dpPerMeter, lossPa: dpPerMeter * lEquiv }
+      // 損失は今までと同じ式（λ/D·q·(L + L曲)）で求め、内訳は別に出す（結果の値を 1 ビットも変えないため）
+      const bendLengthM = ductBendEquivLength(coef, diameterMm, node.params)
+      const lEquiv = lengthM + bendLengthM
+      return {
+        flowQh, velocity: v, q, dpPerMeter, lossPa: dpPerMeter * lEquiv,
+        duct: {
+          lambda: effectiveLambda, lambdaSource, reynolds, material,
+          frictionPa: dpPerMeter * lengthM, bendPa: dpPerMeter * bendLengthM, bendModel: 'equivalentLength',
+          bendLengthM, bendZeta: diameterMm > 0 ? effectiveLambda * bendLengthM / (diameterMm / 1000) : 0, equivLengthM: lEquiv,
+        },
+      }
     }
     case 'filter': {
       // フィルターはインライン要素。ζ × q で圧損を計算（terminal と同式）
@@ -110,10 +152,8 @@ export function calcNodeResult(
     }
     case 'reducer': {
       const { zeta } = node.params
-      // 出口径は下流のダクトから自動（diameterAuto === false のときだけ手入力値）。
-      // 圧損は縮小後の速い流れで効くので出口径で評価する。
-      const diameterToMm = effectiveDiameterMm(nodes, node)
-      const v = calcVelocity(flowQh, diameterToMm)
+      // ζ の基準断面の径で動圧を求める（SPEC.md §4）。欄の無い保存データは木の葉の側（2026-10 までの決まり）
+      const v = calcVelocity(flowQh, reducerDiameters(nodes, node).referenceMm)
       const q = dynamicPressure(rho, v)
       return { flowQh, velocity: v, q, dpPerMeter: 0, lossPa: zeta * q }
     }
@@ -197,7 +237,7 @@ export function aggregateFlows(
         let supply: number
         let intake: number
         if (ret != null && ret >= 0) {
-          // リターン主モード: リターン量を intake の真値とし、供給(HEX)を派生（実運用に合致）
+          // リターン主モード: リターン量を追加吸込の設計入力とし、供給(HEX)を求める
           intake = Math.min(circulation, ret * flowScale)
           supply = Math.max(0, circulation - intake)
         } else {
@@ -367,6 +407,9 @@ export function balanceTerminals(system: DuctSystem, calc: CalcResult): DuctSyst
         zeta: newZeta,
         // Pa 入力の端末は、新しい ζ で生じる Pa を目標圧損に書き戻す（ζ と Pa を食い違わせない）
         targetPa: terminal.params.pressureMode === 'pa' ? newPa : terminal.params.targetPa,
+        // 調整前の値を残す（2 回目以降の調整では最初の値を残す）。取り消しはここへ戻す
+        beforeBalance: terminal.params.beforeBalance
+          ?? { zeta: oldZeta, targetPa: terminal.params.targetPa },
       },
     }
   }
@@ -392,35 +435,57 @@ export function canBalanceTerminals(system: DuctSystem, calc: CalcResult): boole
 }
 
 /**
- * 全下流端末の ζ を初期値（既定）に戻す（ダンパ調整の取り消し）。
- * balanceTerminals の対になるアクション。
- *  - 下流側端末のみ対象（balance と同スコープ）
- *  - ζ = coef.zeta.terminal に戻す
+ * ダンパ調整の取り消し: 調整前の値（`beforeBalance`）を持つ端末を、その値に戻す（SPEC.md §10）。
+ * 記録の無い端末（調整していない・2026-10 より前の版で調整した）には触らない。係数は使わない。
+ */
+export function undoBalanceTerminals(system: DuctSystem): DuctSystem {
+  let changed = false
+  const newNodes = { ...system.nodes }
+  for (const [id, node] of Object.entries(system.nodes)) {
+    if (node.params.kind !== 'terminal' || !node.params.beforeBalance) continue
+    const { beforeBalance, ...rest } = node.params
+    newNodes[id] = { ...node, params: { ...rest, zeta: beforeBalance.zeta, targetPa: beforeBalance.targetPa } }
+    changed = true
+  }
+  return changed ? { ...system, nodes: newNodes } : system
+}
+
+/** 取り消せるダンパ調整があるか（調整前の値を持つ端末が 1 つでもあるか） */
+export function canUndoBalanceTerminals(system: DuctSystem): boolean {
+  return Object.values(system.nodes).some(n => n.params.kind === 'terminal' && !!n.params.beforeBalance)
+}
+
+/**
+ * 吹出側の端末の ζ を既定値に戻す。
+ *  - 器材カタログから選んだ端末（catalogRef あり）は既定値にしない。ダンパ調整していれば調整前の値に戻す
+ *    （以前はカタログの ζ まで係数の既定値で上書きし、計算書の「出典」と食い違っていた）
+ *  - それ以外の端末は ζ = coef.zeta.terminal。調整前の値の記録も消す
+ *  - 吸込側の端末は触らない（balance と同じ範囲）
  *  - pressureMode は維持。'pa' の端末は **その ζ で実際に生じる Pa** を targetPa に同期する
  *
  * ⚠ ζ と targetPa を別々に書いてはいけない。以前は `targetPa: 既定の端末 Pa` と
  * 決め打ちしていたため、Pa 入力モードの端末で「目標 5 Pa／ζ 1.000」と表示しながら
- * 実際の圧損は 0.7 Pa、という**画面が嘘をつく状態**になっていた（根拠表にも
- * 「ζ = 5.0 / 0.68 → 1.000」という成り立たない式が出ていた）。
- * balanceTerminals（ζ を変えたら targetPa も新しい値で同期する）と同じ作法に揃える。
+ * 実際の圧損は 0.7 Pa、という**画面が嘘をつく状態**になっていた。
  *
- * @param calc その系統の計算結果。'pa' モードの端末で動圧 q を読むのに要る
+ * @param calc その系統の計算結果（設計風量）。'pa' モードの端末で動圧 q を読むのに要る
  */
 export function resetTerminals(coef: DesignCoefficients, system: DuctSystem, calc?: CalcResult): DuctSystem {
   const newNodes = { ...system.nodes }
   for (const [id, node] of Object.entries(system.nodes)) {
     if (node.params.kind !== 'terminal') continue
     if (node.side === 'upstream') continue
+    const { beforeBalance, ...rest } = node.params
+    if (rest.catalogRef) {
+      if (beforeBalance) newNodes[id] = { ...node, params: { ...rest, zeta: beforeBalance.zeta, targetPa: beforeBalance.targetPa } }
+      continue
+    }
     const zeta = coef.zeta.terminal
     // Pa モードは ζ×q を表示 Pa にする。q が無い（計算前・風量 0）ときだけ既定値に置く
     const q = calc?.byNode[id]?.q ?? 0
-    const targetPa = node.params.pressureMode === 'pa'
+    const targetPa = rest.pressureMode === 'pa'
       ? (q > 0 ? zeta * q : coef.terminalPa)
       : coef.terminalPa
-    newNodes[id] = {
-      ...node,
-      params: { ...node.params, zeta, targetPa },
-    }
+    newNodes[id] = { ...node, params: { ...rest, zeta, targetPa } }
   }
   return { ...system, nodes: newNodes }
 }
@@ -521,7 +586,9 @@ export function fanUpstreamBalance(system: DuctSystem, calc: CalcResult): Upstre
     ids.push(id)
     entered += Math.max(0, n.params.targetFlowQh)
   }
-  const required = calc.fanFlowQh
+  // 入力（目標風量）どうしの比べなので、風量の倍率をかけない設計風量と比べる。
+  // calc.fanFlowQh は検討モードの倍率込みのことがあり、入力どおりでも食い違いが出ていた
+  const required = aggregateFlows(nodes, system.rootId, 1).flows[system.rootId] ?? 0
   const diff = entered - required
   const tol = Math.max(0.5, required * 0.005)
   return {
@@ -533,13 +600,13 @@ export function fanUpstreamBalance(system: DuctSystem, calc: CalcResult): Upstre
   }
 }
 
-export function calcSystem(coef: DesignCoefficients, system: DuctSystem, rho: number, flowScale = 1): CalcResult {
+export function calcSystem(coef: DesignCoefficients, system: DuctSystem, rho: number, flowScale = 1, env: CalcEnv = {}): CalcResult {
   const { flows, aircons } = aggregateFlows(system.nodes, system.rootId, flowScale)
   const nodes = system.nodes
 
   const byNode: Record<string, NodeResult> = {}
   for (const [id, node] of Object.entries(system.nodes)) {
-    byNode[id] = calcNodeResult(coef, system.nodes, node, flows[id] ?? 0, rho)
+    byNode[id] = calcNodeResult(coef, system.nodes, node, flows[id] ?? 0, rho, env)
   }
 
   // ルートは「枝の末端」ごとに 1 本。末端が端末（ディフューザー等）とは限らない。

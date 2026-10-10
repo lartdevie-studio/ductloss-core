@@ -1,5 +1,6 @@
-import type { BendAngle, DuctLossPayload, DuctNode, DuctSystem, NodeKind, NodeParams, RouteResult, SystemType } from './types'
-import type { DesignCoefficients } from './coefficients'
+import type { BendAngle, CoefficientsStamp, DuctLossPayload, DuctNode, DuctSystem, NodeKind, NodeParams, RouteResult, SystemType } from './types'
+import { coefficientFingerprint, type DesignCoefficients } from './coefficients'
+import { ENGINE_VERSION } from './version'
 import { RHO_DEFAULT } from './physics'
 import { DEFAULT_SYSTEM_NAME } from './payload'
 import { newId } from './id'
@@ -23,14 +24,18 @@ export const NODE_KIND_LABEL: Record<NodeKind, string> = {
 export function defaultParams(coef: DesignCoefficients, kind: NodeKind): NodeParams {
   switch (kind) {
     case 'fan':
-      return { kind: 'fan', maxStaticPa: null, notch: '', defaultLambda: coef.lambda }
+      // 粗さから λ を求める係数なら null（直管ごとに材料と風速で求める）。λ 一定の係数なら係数の λ
+      return { kind: 'fan', maxStaticPa: null, notch: '', defaultLambda: coef.friction?.model === 'roughness' ? null : coef.lambda }
     case 'duct':
       return { kind: 'duct', diameterMm: 150, lengthM: 1.0, bendAngleDeg: 90 as BendAngle, bendCount: 0, lambda: null }
     case 'filter':
+      // ζ 入力を既定にする。以前は Pa 入力（目標 filterPa）なのに ζ は zeta.filter のままで、
+      // 画面は「30 Pa」、計算は ζ 5 × 動圧 という食い違いのまま置かれていた。
+      // filterPa は Pa 入力に切り替えたときの初期値として持つ
       return {
         kind: 'filter',
         diameterMm: 150,
-        pressureMode: 'pa',
+        pressureMode: 'zeta',
         zeta: coef.zeta.filter,
         targetPa: coef.filterPa,
         filterNote: '',
@@ -38,12 +43,14 @@ export function defaultParams(coef: DesignCoefficients, kind: NodeKind): NodePar
     case 'branch':
       return { kind: 'branch', diameterMm: 150, zeta: coef.zeta.branch }
     case 'reducer':
-      return { kind: 'reducer', diameterFromMm: 150, diameterToMm: 100, zeta: coef.zeta.reducer }
+      // ζ は細い側（速い側）の動圧を基準にした値とする（縮小・拡大とも一般的な定義。SPEC.md §4）
+      return { kind: 'reducer', diameterFromMm: 150, diameterToMm: 100, zeta: coef.zeta.reducer, zetaBasis: 'small' }
     case 'aircon':
       return {
         kind: 'aircon',
         diameterMm: 200,
-        pressureMode: 'pa',
+        // ζ 入力を既定にする（フィルターと同じ理由）。機外静圧と比べるなら本体の ζ は 0（SPEC.md §3）
+        pressureMode: 'zeta',
         zeta: coef.zeta.aircon,
         targetPa: 0,
         supplyFromHexQh: null,
@@ -112,7 +119,14 @@ export function makeInitialPayload(coef: DesignCoefficients): DuctLossPayload {
     schemaVersion: 4,
     rho: RHO_DEFAULT,
     systems: [makeSystem(coef, 'SA')],
+    // 部材の既定値をどの係数で入れたかを残す（SPEC.md §2・§12）
+    coefficientsStamp: coefficientsStampOf(coef),
   }
+}
+
+/** 係数セットと計算の版の記録（保存データ・計算結果に入れる） */
+export function coefficientsStampOf(coef: DesignCoefficients): CoefficientsStamp {
+  return { name: coef.name, source: coef.source, fingerprint: coefficientFingerprint(coef), engineVersion: ENGINE_VERSION }
 }
 
 /**

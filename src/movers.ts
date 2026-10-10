@@ -91,12 +91,15 @@ function unitLabelOf(system: DuctSystem, isAirconRoot: boolean): string {
 export function collectMovers(
   systems: DuctSystem[],
   calcBySystem: Record<string, CalcResult>,
+  /** 計算の空気密度。省くと計算結果の meta の ρ を使う（機器の特性を ρ/1.20 倍にして比べる。SPEC.md §7） */
+  rho?: number,
 ): MoverRow[] {
   const rows: MoverRow[] = []
 
   for (const sys of systems) {
     const calc = calcBySystem[sys.id]
     if (!calc) continue
+    const airRho = rho ?? calc.meta?.rho
     const root = sys.nodes[sys.rootId]
     const isAirconRoot = root?.params.kind === 'aircon'
     // 機器能力は「root がファンなら FanParams、root がエアコンなら AirconParams」。
@@ -125,7 +128,7 @@ export function collectMovers(
       requiredPa:   calc.fanRequiredPa,
       maxStaticPa:  rootMaxStaticPa,
       pqPoints:     rootPqPoints,
-      verdict:      judgeMover(calc.fanRequiredPa, calc.fanFlowQh, rootMaxStaticPa, rootPqPoints, rootMaxStaticAtQh),
+      verdict:      judgeMover(calc.fanRequiredPa, calc.fanFlowQh, rootMaxStaticPa, rootPqPoints, rootMaxStaticAtQh, airRho),
       isPrimary:    true,
       isAircon:     isAirconRoot,
       split:        null,
@@ -145,7 +148,7 @@ export function collectMovers(
         requiredPa:   m.requiredPa,
         maxStaticPa:  m.maxStaticPa,
         pqPoints:     m.pqPoints,
-        verdict:      judgeMover(m.requiredPa, m.circulationQh, m.maxStaticPa, m.pqPoints, m.maxStaticAtQh),
+        verdict:      judgeMover(m.requiredPa, m.circulationQh, m.maxStaticPa, m.pqPoints, m.maxStaticAtQh, airRho),
         isPrimary:    false,
         isAircon:     true,
         split:        { fromHexQh: m.supplyFromHexQh, recircQh: m.intakeQh },

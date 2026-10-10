@@ -13,37 +13,41 @@
 
 // 計算一式（係数を結び付ける入口）
 export { createDuctLoss, type DuctLossEngine } from './engine'
-export { validateCoefficients, type DesignCoefficients } from './coefficients'
+export {
+  validateCoefficients, coefficientFingerprint, bendAngleFactor, bendZeta,
+  type DesignCoefficients, type FrictionModel, type BendModel, type DuctMaterial, type BendShape,
+} from './coefficients'
+export { ENGINE_VERSION } from './version'
 
 // データの形
 export * from './types'
 export {
   DEFAULT_SYSTEM_NAME, migrateLegacySystemType, schemaVersionOf, isValidPayloadV4, tryUpgradePayload,
 } from './payload'
-export { NODE_KIND_LABEL, routeEndLabel } from './factory'
+export { NODE_KIND_LABEL, routeEndLabel, coefficientsStampOf } from './factory'
 
 // 空気
-export { RHO_DEFAULT, airDensity } from './physics'
+export { RHO_DEFAULT, CHARACTERISTIC_RHO, airDensity, airKinematicViscosity, colebrookLambda } from './physics'
 
 // 木の操作・走査・径の読み取り（部材を足す操作は createDuctLoss の addChild / insertOnEdge）
 export {
   deleteSubtree, updateNode, moveNode, listLeafIds, pathFromRoot, postOrder, findAncestorFan,
   resolveConnectedDiameter, resolveReducerDiameters, usesAutoDiameter, effectiveDiameterMm, effectiveReducerFromMm,
-  structureIssues, type ResolvedDiameter, type StructureIssue,
+  structureIssues, nodeFlowSide, reducerDiameters, reducerZetaForBasis, REDUCER_ZETA_BASIS_LABELS, type ResolvedDiameter, type StructureIssue, type ReducerDiameters,
 } from './tree'
 
 // 係数に依らない計算
 export {
   dynamicPressure, calcVelocity, frictionPerMeter, ductBends, aggregateFlows,
-  balanceTerminals, canBalanceTerminals, routeOwner, fanUpstreamBalance,
-  type RouteOwner, type UpstreamBalance,
+  balanceTerminals, canBalanceTerminals, undoBalanceTerminals, canUndoBalanceTerminals, routeOwner, fanUpstreamBalance,
+  type RouteOwner, type UpstreamBalance, type CalcEnv,
 } from './calculator'
 export {
   fitResistanceK, resistanceP, sampleResistance, normalizeFanPoints, interpFanP, sampleFan,
-  findOperatingPoint, resistanceAtFlow, type PQPoint,
+  findOperatingPoint, findOperatingPoints, resistanceAtFlow, type PQPoint,
 } from './pqcurve'
 export {
-  systemResistanceK, judgeMover, type VerdictLevel, type VerdictBasis, type MoverVerdict,
+  systemResistanceK, judgeMover, VERDICT_PREMISE, type VerdictLevel, type VerdictBasis, type MoverVerdict,
 } from './verdict'
 export {
   ACH_DEFAULT, makeDefaultVentilation, resolveVolumeM3, requiredVentilationQh, isCirculationSystem,
@@ -55,7 +59,7 @@ export { diagnose, countByLevel, type IssueLevel, type Issue } from './diagnosti
 // 表示・計算書の下ごしらえ（計算条件の表・解説は createDuctLoss の一式から）
 export type { ExplainStep, CurvePoint, NodeExplanation, SystemContext } from './explain'
 export {
-  resolveNodeSide, summarizeTerminalZeta, totalTerminalCount, splitNoteLines, hasReportNotes,
+  resolveNodeSide, summarizeTerminalZeta, totalTerminalCount, splitNoteLines, hasReportNotes, formatCoefficient,
   type TerminalZetaRow, type CalcConditionRow,
 } from './report'
 export { autoLayout, getBounds } from './layout'

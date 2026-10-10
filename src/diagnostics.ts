@@ -1,6 +1,6 @@
 import type { CalcResult, DuctSystem, DuctLossPayload } from './types'
-import { aggregateFlows, fanUpstreamBalance, routeOwner } from './calculator'
-import { pathFromRoot, structureIssues, type StructureIssue } from './tree'
+import { aggregateFlows, calcVelocity, dynamicPressure, fanUpstreamBalance, routeOwner } from './calculator'
+import { effectiveDiameterMm, pathFromRoot, reducerDiameters, structureIssues, type StructureIssue } from './tree'
 import { checkVentilation, isCirculationSystem } from './ventilation'
 import { judgeMover, type MoverVerdict } from './verdict'
 
@@ -52,7 +52,7 @@ function nodeName(sys: DuctSystem, id: string): string {
 /**
  * 1 系統ぶんの点検。
  */
-function diagnoseSystem(sys: DuctSystem, calc: CalcResult): Issue[] {
+function diagnoseSystem(sys: DuctSystem, calc: CalcResult, rho: number): Issue[] {
   const out: Issue[] = []
   const push = (
     level: IssueLevel, key: string, title: string, detail: string, nodeId: string | null = null,
@@ -80,6 +80,53 @@ function diagnoseSystem(sys: DuctSystem, calc: CalcResult): Issue[] {
     if (![r.flowQh, r.velocity, r.q, r.lossPa].every(Number.isFinite)) {
       push('error', 'non-finite', '圧損を数として計算できない部材があります',
         `${nodeName(sys, id)}: 径・長さ・ζ などの入力が欠けているか、数ではありません。この部材を含む経路は必要静圧に正しく入っていません。`, id)
+    }
+  }
+
+  // ── 0b. 入力どうしの食い違い ─────────────────────────────
+  // Pa で入れた部材（端末・フィルター・エアコン）: 計算は ζ で行う（SPEC.md §3）。
+  // 設計風量での ζ·q が入れた Pa と違うとき（風量を後から変えた・既定の ζ のまま）は、
+  // 計算書に出る Pa と計算に入った Pa が食い違うので知らせる
+  const designFlows = aggregateFlows(sys.nodes, sys.rootId, 1).flows
+  for (const n of Object.values(sys.nodes)) {
+    const p = n.params
+    if ((p.kind !== 'terminal' && p.kind !== 'filter' && p.kind !== 'aircon') || p.pressureMode !== 'pa') continue
+    const q = dynamicPressure(rho, calcVelocity(designFlows[n.id] ?? 0, effectiveDiameterMm(sys.nodes, n)))
+    if (!(q > 0)) continue
+    const used = p.zeta * q
+    if (Math.abs(used - p.targetPa) > Math.max(0.05, Math.abs(p.targetPa) * 0.01)) {
+      push('info', 'pa-mode-mismatch', 'Pa で入れた値と、計算に入っている値が違います',
+        `${nodeName(sys, n.id)}: 入れた値 ${p.targetPa.toFixed(1)} Pa に対し、今の設計風量では ζ ${p.zeta.toFixed(3)} × 動圧 ${q.toFixed(2)} Pa ＝ ${used.toFixed(1)} Pa で計算しています。`
+        + '計算は ζ で行います（風量を変えると圧損も変わる）。入れた Pa に合わせるなら、もう一度 Pa を入れ直してください。', n.id)
+    }
+  }
+
+  // レジューサの ζ の基準断面（SPEC.md §4）。欄の無い古いデータは端末の側の動圧で計算する。
+  // 端末の側が太い（木の向きで径が広がる）形では遅い側の動圧に掛けることになり、ζ が細い側の
+  // 動圧で定義された値（多くの表がそう）なら圧損が小さく出る。黙って意味を変えず、知らせて選んでもらう
+  for (const n of Object.values(sys.nodes)) {
+    if (n.params.kind !== 'reducer' || n.params.zetaBasis) continue
+    const d = reducerDiameters(sys.nodes, n)
+    if (!(d.leafSideMm > d.rootSideMm) || !(d.rootSideMm > 0)) continue
+    const ratio = (d.leafSideMm / d.rootSideMm) ** 4
+    push('warn', 'reducer-legacy-basis', 'レジューサの ζ をどの断面の動圧に掛けるかが決まっていません',
+      `${nodeName(sys, n.id)}: 古いデータの決まりで、端末の側（太い側 φ${d.leafSideMm}）の動圧に ζ を掛けています。`
+      + `ζ が細い側（φ${d.rootSideMm}）の動圧で定義された値なら、圧損は約 ${ratio.toFixed(1)} 分の 1 に小さく出ています。`
+      + '出典の表の定義に合わせて「ζ の基準断面」を選んでください（選ぶまで計算は変えません）。', n.id)
+  }
+
+  // 送風機として評価するエアコン（根のエアコン・第 2 の送風機）: カタログの機外静圧は機器の中の
+  // 損失を差し引いた値なので、本体の通過圧損（ζ）を必要静圧に入れて機外静圧と比べると二重に数える
+  const moverAircons = new Set<string>(calc.secondaryMovers.map(m => m.nodeId))
+  if (sys.nodes[sys.rootId]?.params.kind === 'aircon') moverAircons.add(sys.rootId)
+  for (const id of moverAircons) {
+    const p = sys.nodes[id]?.params
+    if (p?.kind !== 'aircon') continue
+    const hasRating = p.maxStaticPa != null || (p.pqPoints?.length ?? 0) > 0
+    if (p.zeta > 0 && hasRating) {
+      push('warn', 'aircon-body-loss', 'エアコン本体の損失を二重に数えているおそれがあります',
+        `${nodeName(sys, id)}: 本体の通過圧損（ζ ${p.zeta.toFixed(3)}）が必要静圧に入っています。`
+        + 'カタログの機外静圧（と P-Q 特性）は本体の中の損失を差し引いた値なので、機外静圧と比べるなら本体の ζ は 0 にしてください。', id)
     }
   }
 
@@ -277,27 +324,37 @@ function diagnoseSystem(sys: DuctSystem, calc: CalcResult): Issue[] {
         `「${label}」: ${v.summary}。`
         + 'ダクト径を上げる、経路を短くする、曲がりを減らす等の見直しが必要です。', nodeId)
     } else if (v.level === 'insufficient') {
-      push('info', `${keyPrefix}-no-characteristic`, '機器の特性が未入力で判定できません',
+      // 保留の理由は「特性が未入力」だけではない（範囲外・定格 1 点・交点が複数）。理由を取り違えない
+      const missing = v.basis === 'none'
+      push('info', `${keyPrefix}-no-characteristic`,
+        missing ? '機器の特性が未入力で判定できません' : '送風機の判定を保留しました',
         `「${label}」は必要静圧 ${v.requiredPa.toFixed(1)} Pa・設定風量 ${v.designQh.toFixed(0)} m³/h です。`
-        + (v.caveat ? v.caveat + '。' : '')
-        + '機外静圧（と、その定格風量）または P-Q 特性を入れてください。', nodeId)
+        + (v.caveat ? v.caveat + '。' : (missing ? '' : v.summary + '。'))
+        + (missing ? '機外静圧（と、その定格風量）または P-Q 特性を入れてください。' : ''), nodeId)
+    } else if (v.level === 'ok' && v.caveat) {
+      // 前提つきの合格（範囲外・定格 1 点）。前提を読まずに合格と受け取らないよう知らせる
+      push('info', `${keyPrefix}-premise`, '送風機の判定は前提つきです',
+        `「${label}」: ${v.caveat}。`, nodeId)
     }
   }
 
   // エアコン（第2送風機）は HEX とは別に必要静圧を持つので個別に見る。
   // エアコンは強設定（定格風量）をベースにする決まりなので、循環風量が
   // その定格風量を超えていたら機器の選定そのものを疑う。
+  // 定格風量との比べは入力どうしの比べなので、風量の倍率をかけない設計風量で見る（SPEC.md §9）
+  const designAircons = calc.secondaryMovers.length > 0 ? aggregateFlows(sys.nodes, sys.rootId, 1).aircons : {}
   for (const m of calc.secondaryMovers) {
     if (m.requiredPa <= 0) continue
+    const circ = designAircons[m.nodeId]?.circulation ?? m.circulationQh
     if (m.maxStaticAtQh != null && m.maxStaticAtQh > 0
-        && m.circulationQh > m.maxStaticAtQh * 1.05) {
+        && circ > m.maxStaticAtQh * 1.05) {
       push('warn', 'aircon-over-rated-flow', '循環風量が強設定の定格風量を超えています',
-        `「${m.label}」の循環風量 ${m.circulationQh.toFixed(0)} m³/h に対し、`
+        `「${m.label}」の循環風量 ${circ.toFixed(0)} m³/h に対し、`
         + `強設定の定格風量は ${m.maxStaticAtQh.toFixed(0)} m³/h です。`
         + '吹出端末の目標風量を見直すか、機器を上位機種にしてください。', m.nodeId)
     }
     pushVerdict(
-      judgeMover(m.requiredPa, m.circulationQh, m.maxStaticPa, m.pqPoints, m.maxStaticAtQh),
+      judgeMover(m.requiredPa, m.circulationQh, m.maxStaticPa, m.pqPoints, m.maxStaticAtQh, rho),
       m.label, m.nodeId, 'aircon',
     )
   }
@@ -312,6 +369,7 @@ function diagnoseSystem(sys: DuctSystem, calc: CalcResult): Issue[] {
         rootParams.maxStaticPa ?? null,
         rootParams.pqPoints ?? null,
         rootParams.maxStaticAtQh ?? null,
+        rho,
       ),
       sys.name, sys.rootId, 'fan',
     )
@@ -332,11 +390,11 @@ export function diagnose(
   for (const sys of payload.systems) {
     const calc = calcBySystem[sys.id]
     if (!calc) continue
-    out.push(...diagnoseSystem(sys, calc))
+    out.push(...diagnoseSystem(sys, calc, payload.rho))
   }
 
   // ── 4-0. 必要換気量との照合 ──────────────────────────────
-  // 気積 × 換気回数 で出した必要換気量に対し、設計した給気が足りているか。
+  // 気積 × 換気回数 で出した必要換気量に対し、設計した給気（給気系統が無ければ排気）が足りているか。
   // 端末風量には書き込まないので、ここで気づけないと誰も気づかない。
   const vent = checkVentilation(payload)
   // 気積は入っているのに換気回数が 0 → 照合が静かに止まる。点検からも消えるので明示する
@@ -352,10 +410,10 @@ export function diagnose(
   if (vent.requiredQh != null && vent.ok === false && vent.diffQh != null) {
     out.push({
       id: 'vent:short', level: 'error', systemId: null, nodeId: null,
-      title: '給気が必要換気量に足りていません',
+      title: `${vent.basisLabel}が必要換気量に足りていません`,
       detail: `気積 ${vent.volumeM3?.toFixed(1)} m³ × ${payload.ventilation?.achPerH} 回/h = `
-        + `必要換気量 ${vent.requiredQh.toFixed(0)} m³/h に対し、給気の合計は ${vent.supplyQh.toFixed(0)} m³/h です`
-        + `（不足 ${(-vent.diffQh).toFixed(0)} m³/h`
+        + `必要換気量 ${vent.requiredQh.toFixed(1)} m³/h に対し、${vent.basisLabel}の合計は ${vent.ventilationQh.toFixed(1)} m³/h です`
+        + `（不足 ${(-vent.diffQh).toFixed(1)} m³/h`
         + (vent.actualAch != null ? `／実質 ${vent.actualAch.toFixed(2)} 回/h` : '') + '）。'
         + '端末の目標風量を見直してください。',
     })

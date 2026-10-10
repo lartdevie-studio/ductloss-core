@@ -63,13 +63,25 @@ export interface VentilationCheck {
   supplyQh: number
   /** 排気（RE 系統）の総風量 (m³/h) */
   exhaustQh: number
-  /** 給気 − 必要換気量。負なら不足 */
+  /**
+   * 必要換気量と比べる風量の種類。給気系統があれば給気（第一種・第二種）、
+   * 給気系統が無く排気系統があれば排気（第三種）。建築研究所 技術情報 第五章 6.4 と同じ分け方
+   */
+  basis: 'supply' | 'exhaust'
+  /** basis の呼び名（「給気」「排気」） */
+  basisLabel: string
+  /** 必要換気量と比べた風量 (m³/h) */
+  ventilationQh: number
+  /** 比べた風量 − 必要換気量。負なら不足 */
   diffQh: number | null
-  /** 足りているか（許容差内）。必要換気量が出せないときは null */
+  /** 必要換気量以上か（施行令 20条の8 は「以上」を求める。不足を許す幅は持たない）。必要換気量が出せないときは null */
   ok: boolean | null
-  /** 実際の換気回数（給気の総風量 ÷ 気積）。気積が無ければ null */
+  /** 実際の換気回数（比べた風量 ÷ 気積）。気積が無ければ null */
   actualAch: number | null
 }
+
+/** 計算の丸めだけを吸収する幅 (m³/h)。設計上の不足を許すための幅ではない */
+const VENT_EPS_QH = 1e-6
 
 /**
  * 循環系統か（root がエアコン）。外気を入れないので換気量に数えない。
@@ -102,25 +114,32 @@ export function designSupplyQh(payload: DuctLossPayload): { supplyQh: number; ex
 }
 
 /**
- * 必要換気量と、設計した給気風量を突き合わせる。
- * 給気は SA 系統の設計風量の合計（循環系統を除く・倍率なし）。
+ * 必要換気量と、設計した換気の風量を突き合わせる（SPEC.md §8）。
+ *  - 比べる風量: 給気（SA 系統）の設計風量の合計。給気系統が無く排気（RE 系統）があれば排気の合計（第三種換気）。
+ *    循環系統（根がエアコン）は外気を入れないので数えない。倍率はかけない
+ *  - 足りている ⟺ 比べる風量 ≥ 必要換気量（施行令 20条の8 は「以上」。以前は 2% までの不足を足りているとしていた）
  */
 export function checkVentilation(payload: DuctLossPayload): VentilationCheck {
   const v = payload.ventilation
   const requiredQh = v ? requiredVentilationQh(v) : null
   const volumeM3 = v ? resolveVolumeM3(v) : null
   const { supplyQh, exhaustQh } = designSupplyQh(payload)
+  const hasSupply = payload.systems.some(s => s.type === 'SA' && !isCirculationSystem(s))
+  const hasExhaust = payload.systems.some(s => s.type !== 'SA' && !isCirculationSystem(s))
+  const basis: 'supply' | 'exhaust' = !hasSupply && hasExhaust ? 'exhaust' : 'supply'
+  const ventilationQh = basis === 'supply' ? supplyQh : exhaustQh
 
-  const diffQh = requiredQh != null ? supplyQh - requiredQh : null
-  // 許容差: 必要換気量の 2%（丸めと按分のぶれを吸収する）。最低 1 m³/h
-  const tol = requiredQh != null ? Math.max(1, requiredQh * 0.02) : 0
+  const diffQh = requiredQh != null ? ventilationQh - requiredQh : null
   return {
     volumeM3,
     requiredQh,
     supplyQh,
     exhaustQh,
+    basis,
+    basisLabel: basis === 'supply' ? '給気' : '排気',
+    ventilationQh,
     diffQh,
-    ok: diffQh == null ? null : diffQh >= -tol,
-    actualAch: volumeM3 != null && volumeM3 > 0 ? supplyQh / volumeM3 : null,
+    ok: diffQh == null ? null : diffQh >= -VENT_EPS_QH,
+    actualAch: volumeM3 != null && volumeM3 > 0 ? ventilationQh / volumeM3 : null,
   }
 }

@@ -1,0 +1,288 @@
+{
+  "title": "検算例 3: 粗さから求める λ と、曲がりの ζ（角度の補正・形・器材の ζ）",
+  "tempC": 30.0,
+  "coefficients": {
+    "name": "検算例 3 用（架空）",
+    "source": "examples/03-roughness-bend-zeta のために作った値。設計には使わないこと",
+    "lambda": 0.04,
+    "bendEquivLength90M": {},
+    "zeta": {
+      "branch": 0.9,
+      "reducer": 0.2,
+      "terminal": 1.5,
+      "filter": 3,
+      "aircon": 0
+    },
+    "terminalPa": 6,
+    "filterPa": 20,
+    "friction": {
+      "model": "roughness",
+      "defaultMaterial": "spiral",
+      "materials": {
+        "spiral": {
+          "label": "スパイラル（架空）",
+          "roughnessMm": 0.12,
+          "source": "検算用の架空の値"
+        },
+        "smooth": {
+          "label": "平滑な管（架空）",
+          "roughnessMm": 0.002,
+          "source": "検算用の架空の値"
+        }
+      }
+    },
+    "bend": {
+      "model": "zeta",
+      "defaultShape": "r10",
+      "shapes": {
+        "r10": {
+          "label": "曲げ半径＝径（架空）",
+          "zeta90": 0.26,
+          "source": "検算用の架空の値"
+        },
+        "r15": {
+          "label": "曲げ半径＝1.5 径（架空）",
+          "zeta90": 0.17,
+          "source": "検算用の架空の値"
+        }
+      },
+      "angleFactor": {
+        "30": 0.5,
+        "45": 0.62,
+        "60": 0.8,
+        "90": 1.0
+      },
+      "angleFactorSource": "検算用の架空の値"
+    }
+  },
+  "payload": {
+    "schemaVersion": 4,
+    "rho": 1.1643981014191607,
+    "airTempC": 30.0,
+    "systems": [
+      {
+        "id": "sa",
+        "name": "給気",
+        "type": "SA",
+        "rootId": "fan",
+        "nodes": {
+          "fan": {
+            "id": "fan",
+            "x": 0,
+            "y": 0,
+            "label": "送風機",
+            "parentId": null,
+            "childIds": [
+              "oa",
+              "main"
+            ],
+            "side": "downstream",
+            "params": {
+              "kind": "fan",
+              "maxStaticPa": null,
+              "notch": "",
+              "defaultLambda": null,
+              "pqPoints": [
+                {
+                  "q": 0,
+                  "p": 120
+                },
+                {
+                  "q": 150,
+                  "p": 90
+                },
+                {
+                  "q": 300,
+                  "p": 0
+                }
+              ]
+            }
+          },
+          "oa": {
+            "id": "oa",
+            "x": 0,
+            "y": 0,
+            "label": "外気ダクト",
+            "parentId": "fan",
+            "childIds": [
+              "hood"
+            ],
+            "side": "upstream",
+            "params": {
+              "kind": "duct",
+              "diameterMm": 150,
+              "lengthM": 2.5,
+              "bendAngleDeg": 90,
+              "bendCount": 0,
+              "bends": [
+                {
+                  "angleDeg": 90,
+                  "count": 1
+                }
+              ],
+              "lambda": null
+            }
+          },
+          "hood": {
+            "id": "hood",
+            "x": 0,
+            "y": 0,
+            "label": "外気フード",
+            "parentId": "oa",
+            "childIds": [],
+            "side": "upstream",
+            "params": {
+              "kind": "terminal",
+              "diameterMm": 150,
+              "targetFlowQh": 200,
+              "pressureMode": "zeta",
+              "zeta": 2.0,
+              "targetPa": 0
+            }
+          },
+          "main": {
+            "id": "main",
+            "x": 0,
+            "y": 0,
+            "label": "主管",
+            "parentId": "fan",
+            "childIds": [
+              "br"
+            ],
+            "side": "downstream",
+            "params": {
+              "kind": "duct",
+              "diameterMm": 150,
+              "lengthM": 6,
+              "bendAngleDeg": 90,
+              "bendCount": 0,
+              "bends": [
+                {
+                  "angleDeg": 90,
+                  "count": 2
+                },
+                {
+                  "angleDeg": 45,
+                  "count": 1
+                }
+              ],
+              "lambda": null
+            }
+          },
+          "br": {
+            "id": "br",
+            "x": 0,
+            "y": 0,
+            "label": "分岐",
+            "parentId": "main",
+            "childIds": [
+              "dA",
+              "dB"
+            ],
+            "side": "downstream",
+            "params": {
+              "kind": "branch",
+              "diameterMm": 150,
+              "zeta": 0.9
+            }
+          },
+          "dA": {
+            "id": "dA",
+            "x": 0,
+            "y": 0,
+            "label": "枝 A",
+            "parentId": "br",
+            "childIds": [
+              "tA"
+            ],
+            "side": "downstream",
+            "params": {
+              "kind": "duct",
+              "diameterMm": 100,
+              "lengthM": 5,
+              "bendAngleDeg": 90,
+              "bendCount": 0,
+              "bends": [
+                {
+                  "angleDeg": 90,
+                  "count": 1,
+                  "shape": "r15"
+                },
+                {
+                  "angleDeg": 30,
+                  "count": 2
+                }
+              ],
+              "lambda": null
+            }
+          },
+          "tA": {
+            "id": "tA",
+            "x": 0,
+            "y": 0,
+            "label": "吹出口 A",
+            "parentId": "dA",
+            "childIds": [],
+            "side": "downstream",
+            "params": {
+              "kind": "terminal",
+              "diameterMm": 100,
+              "targetFlowQh": 120,
+              "pressureMode": "zeta",
+              "zeta": 1.5,
+              "targetPa": 0
+            }
+          },
+          "dB": {
+            "id": "dB",
+            "x": 0,
+            "y": 0,
+            "label": "枝 B",
+            "parentId": "br",
+            "childIds": [
+              "tB"
+            ],
+            "side": "downstream",
+            "params": {
+              "kind": "duct",
+              "diameterMm": 100,
+              "lengthM": 3,
+              "bendAngleDeg": 90,
+              "bendCount": 0,
+              "bends": [
+                {
+                  "angleDeg": 90,
+                  "count": 1,
+                  "zeta": 0.5
+                },
+                {
+                  "angleDeg": 60,
+                  "count": 1
+                }
+              ],
+              "lambda": null,
+              "material": "smooth"
+            }
+          },
+          "tB": {
+            "id": "tB",
+            "x": 0,
+            "y": 0,
+            "label": "吹出口 B",
+            "parentId": "dB",
+            "childIds": [],
+            "side": "downstream",
+            "params": {
+              "kind": "terminal",
+              "diameterMm": 100,
+              "targetFlowQh": 80,
+              "pressureMode": "zeta",
+              "zeta": 1.5,
+              "targetPa": 0
+            }
+          }
+        }
+      }
+    ]
+  }
+}

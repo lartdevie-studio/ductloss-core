@@ -1,4 +1,4 @@
-import type { DuctNode, NodeKind, FlowSide } from './types'
+import type { DuctNode, NodeKind, FlowSide, ReducerZetaBasis } from './types'
 import type { DesignCoefficients } from './coefficients'
 import { makeNode } from './factory'
 
@@ -406,3 +406,65 @@ export function effectiveReducerFromMm(nodes: Nodes, node: DuctNode): number {
 }
 
 export { isDiameterAnchor }
+
+/** 部材の流れの側。経路の計算（calculator.ts）と同じく、部材に記録された side を使い、無ければ吹出側 */
+export function nodeFlowSide(node: DuctNode): FlowSide {
+  return node.side ?? 'downstream'
+}
+
+/** レジューサの ζ の基準断面の呼び名（画面・計算書・説明で共通に使う） */
+export const REDUCER_ZETA_BASIS_LABELS: Readonly<Record<ReducerZetaBasis, string>> = Object.freeze({
+  small: '細い側',
+  large: '太い側',
+  flowInlet: '空気の入口側',
+  flowOutlet: '空気の出口側',
+  treeLeaf: '端末の側（旧データの決まり）',
+})
+
+/** レジューサの両端の径と、ζ の基準にする断面の径（SPEC.md §4） */
+export interface ReducerDiameters {
+  /** 根の側（送風機の側）の径 */
+  rootSideMm: number
+  /** 葉の側（端末の側）の径 */
+  leafSideMm: number
+  /** 空気の流れの入口・出口の径 */
+  flowInletMm: number
+  flowOutletMm: number
+  /** ζ の基準にする断面の径（動圧はこの径で求める） */
+  referenceMm: number
+  /** 使った基準（欄の無い保存データは 'treeLeaf'） */
+  basis: ReducerZetaBasis
+  /** 空気の流れで見て細くなる（縮小）か、太くなる（拡大）か、同じか */
+  change: 'contraction' | 'expansion' | 'none'
+}
+
+export function reducerDiameters(nodes: Nodes, node: DuctNode): ReducerDiameters {
+  const rootSideMm = effectiveReducerFromMm(nodes, node)
+  const leafSideMm = effectiveDiameterMm(nodes, node)
+  const intake = nodeFlowSide(node) === 'upstream'
+  const flowInletMm = intake ? leafSideMm : rootSideMm
+  const flowOutletMm = intake ? rootSideMm : leafSideMm
+  const basis: ReducerZetaBasis = (node.params.kind === 'reducer' && node.params.zetaBasis) || 'treeLeaf'
+  const referenceMm =
+    basis === 'small' ? Math.min(rootSideMm, leafSideMm)
+    : basis === 'large' ? Math.max(rootSideMm, leafSideMm)
+    : basis === 'flowInlet' ? flowInletMm
+    : basis === 'flowOutlet' ? flowOutletMm
+    : leafSideMm
+  const change = flowOutletMm < flowInletMm ? 'contraction' : flowOutletMm > flowInletMm ? 'expansion' : 'none'
+  return { rootSideMm, leafSideMm, flowInletMm, flowOutletMm, referenceMm, basis, change }
+}
+
+/**
+ * 基準断面を選び直すときに、**同じ損失を保つ** ζ（SPEC.md §4）。
+ * 同じ風量で動圧は径の 4 乗に反比例するので ζ' = ζ × (D' / D)⁴（D は今の基準断面の径、D' は新しい基準断面の径）。
+ * 器材カタログから Pa を ζ に直して入れた値など、損失の方が正のときに使う。
+ * 出典の表の ζ をそのまま使うときは換算しない（基準断面を出典の定義に合わせて選ぶだけ）。
+ */
+export function reducerZetaForBasis(nodes: Nodes, node: DuctNode, basis: ReducerZetaBasis): number {
+  if (node.params.kind !== 'reducer') return 0
+  const now = reducerDiameters(nodes, node)
+  const next = reducerDiameters(nodes, { ...node, params: { ...node.params, zetaBasis: basis } })
+  if (!(now.referenceMm > 0) || !(next.referenceMm > 0)) return node.params.zeta
+  return node.params.zeta * (next.referenceMm / now.referenceMm) ** 4
+}

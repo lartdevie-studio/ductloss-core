@@ -110,42 +110,60 @@ export function sampleFan(points: PQPoint[], n = 40): PQPoint[] {
 // ── 運転点（ファン ∩ 抵抗） ───────────────────────────────────
 
 /**
- * ファン P-Q（区分線形）と 抵抗カーブ ΔP=k·Q² の交点（運転点）を求める。
- * f(Q) = interpFanP(Q) − k·Q² の符号反転を二分法で探す。
- * 交点が無ければ null。
+ * ファン P-Q（点を線でつないだ折れ線）と 抵抗カーブ ΔP=k·Q² の交点を**すべて**求める。
+ *
+ * 線分ごとに p = a + b·Q と置き、k·Q² − b·Q − a = 0 を解く（解析解）。
+ * 以前の「200 分割で符号が変わる区間を探して二分法」は、区間より細い線分の交点・
+ * 接するだけの点・端点ちょうどの交点を取りこぼすことがあった。
+ *
+ * - 範囲は特性の点の最小風量〜最大風量。範囲の外へは延ばさない
+ * - 接する点（重解）も交点に数える
+ * - k = 0（抵抗なし）は p = 0 になる点
+ * - 戻り値は風量の小さい順。同じ点（線分の境目で 2 回見つかったもの）は 1 つにまとめる
+ */
+export function findOperatingPoints(fanPoints: readonly PQPoint[], k: number): PQPoint[] {
+  const pts = sortedFan(fanPoints)
+  if (pts.length < 2 || !(k >= 0) || !Number.isFinite(k)) return []
+  const roots: number[] = []
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i], p1 = pts[i + 1]
+    const dq = p1.q - p0.q
+    if (!(dq > 0)) continue
+    const b = (p1.p - p0.p) / dq
+    const a = p0.p - b * p0.q
+    const tol = 1e-9 * Math.max(1, Math.abs(p1.q))
+    const inSeg = (q: number) => q >= p0.q - tol && q <= p1.q + tol
+    if (k === 0) {
+      if (b !== 0) { const q = -a / b; if (inSeg(q)) roots.push(q) }
+      else if (a === 0) roots.push(p0.q)
+      continue
+    }
+    const disc = b * b + 4 * k * a
+    const scale = Math.max(b * b, Math.abs(4 * k * a), 1e-300)
+    if (disc < -1e-12 * scale) continue
+    const sq = Math.sqrt(Math.max(0, disc))
+    // 桁落ちしにくい形: 片方を (b ± √D)/(2k)、もう片方を 根の積 −a/k から求める
+    const q1 = (b + (b >= 0 ? sq : -sq)) / (2 * k)
+    const cand = q1 !== 0 ? [q1, -a / (k * q1)] : [0, b / k]
+    for (const q of cand) if (Number.isFinite(q) && inSeg(q)) roots.push(Math.min(Math.max(q, p0.q), p1.q))
+  }
+  roots.sort((x, y) => x - y)
+  const out: PQPoint[] = []
+  for (const q of roots) {
+    const last = out[out.length - 1]
+    if (last && Math.abs(last.q - q) <= 1e-7 * Math.max(1, Math.abs(q))) continue
+    out.push({ q, p: interpFanP(pts, q) })
+  }
+  return out
+}
+
+/**
+ * 運転点: ファン P-Q と 抵抗カーブ ΔP=k·Q² の交点のうち、**風量の小さい側の最初の交点**。
+ * 範囲の中に交点が無ければ null。交点が複数ある特性（鞍部）では、ほかの交点も
+ * `findOperatingPoints` で確かめること（どの交点で安定して運転するかは判定しない）。
  */
 export function findOperatingPoint(fanPoints: PQPoint[], k: number): PQPoint | null {
-  const pts = sortedFan(fanPoints)
-  if (pts.length < 2 || k <= 0) return null
-
-  const f = (q: number) => interpFanP(pts, q) - resistanceP(k, q)
-  const qMin = pts[0].q
-  const qMax = pts[pts.length - 1].q
-
-  // 走査して符号反転区間を探す
-  const N = 200
-  let qa = qMin, fa = f(qa)
-  for (let i = 1; i <= N; i++) {
-    const qb = qMin + ((qMax - qMin) * i) / N
-    const fb = f(qb)
-    if (fa === 0) return { q: qa, p: interpFanP(pts, qa) }
-    if (fa * fb < 0) {
-      // 二分法
-      let lo = qa, hi = qb
-      for (let k2 = 0; k2 < 40; k2++) {
-        const mid = (lo + hi) / 2
-        const fm = f(mid)
-        if (fa * fm <= 0) hi = mid
-        else { lo = mid; fa = fm }
-      }
-      const qStar = (lo + hi) / 2
-      return { q: qStar, p: interpFanP(pts, qStar) }
-    }
-    qa = qb; fa = fb
-  }
-  // 右端でちょうど交わるとき（ループは各区間の左端しか 0 を見ない）
-  if (Math.abs(fa) <= 1e-9) return { q: qa, p: interpFanP(pts, qa) }
-  return null
+  return findOperatingPoints(fanPoints, k)[0] ?? null
 }
 
 /**

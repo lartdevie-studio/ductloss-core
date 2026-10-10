@@ -22,6 +22,12 @@ export type BendAngle = typeof BEND_ANGLES[number]
 export interface BendSpec {
   angleDeg: BendAngle
   count: number
+  /**
+   * 曲がりの形（係数の bend.shapes の鍵）。曲がりを ζ で持つ係数のときだけ使う。省くと係数の既定の形（SPEC.md §3）
+   */
+  shape?: string | null
+  /** 器材カタログなどの 1 個あたりの ζ（この角度での値）。形の値より優先する。ζ で持つ係数のときだけ使う */
+  zeta?: number | null
 }
 /** 1ノードに設定できる曲がり種類の上限 */
 export const MAX_BENDS_PER_DUCT = 3
@@ -51,8 +57,11 @@ export interface FanParams {
   maxStaticAtQh?: number | null
   /** ノッチ／設定段（任意のテキスト） */
   notch: string
-  /** 既定 λ（直管が λ を持たない場合のフォールバック） */
-  defaultLambda: number
+  /**
+   * 既定 λ（直管が λ を持たない場合のフォールバック）。
+   * null は「係数の摩擦の求め方に従う」（粗さから求める係数なら粗さ、λ 一定の係数なら係数の λ。SPEC.md §3）
+   */
+  defaultLambda: number | null
   /**
    * カタログの P-Q 特性（風量 Q m³/h, 静圧 P Pa）の点列。2 点以上で運転点を出す。
    * 上限静圧だけの 1 点判定より厳しい（静圧が上がると風量が落ちるため）。
@@ -85,6 +94,10 @@ export interface DuctParams {
   bends?: BendSpec[]
   /** 摩擦係数（未設定なら祖先 fan の defaultLambda を使う） */
   lambda: number | null
+  /**
+   * ダクトの材料（係数の friction.materials の鍵）。粗さから λ を求める係数のときだけ使う。省くと係数の既定の材料
+   */
+  material?: string | null
 }
 
 /**
@@ -137,8 +150,23 @@ export interface ReducerParams {
    */
   diameterAuto?: boolean
   zeta: number
+  /**
+   * ζ がどの断面の動圧を基準にした値か（SPEC.md §3・§4）。ζ の出典の定義に合わせて選ぶ。
+   * 欄の無い保存データは 'treeLeaf'（2026-10 までの決まり）として計算し、意味を黙って変えない。
+   */
+  zetaBasis?: ReducerZetaBasis
   catalogRef?: CatalogRef
 }
+
+/**
+ * レジューサの ζ の基準断面。
+ *  - 'small'      細い側（速い側）。縮小・拡大とも一般的な ζ の定義。新しく置く部材の既定
+ *  - 'large'      太い側（遅い側）
+ *  - 'flowInlet'  空気の流れの入口側（吹出側は根の側、吸込側は葉の側）
+ *  - 'flowOutlet' 空気の流れの出口側（吹出側は葉の側、吸込側は根の側）
+ *  - 'treeLeaf'   木の葉の側（端末の側）。2026-10 までの決まりで、吸込側や径が太くなる形では遅い側になる
+ */
+export type ReducerZetaBasis = 'small' | 'large' | 'flowInlet' | 'flowOutlet' | 'treeLeaf'
 
 /**
  * エアコン（ダクト形エアコン / 全館空調の室内機など）。
@@ -171,8 +199,8 @@ export interface AirconParams {
    * リターン（追加吸込）風量 (m³/h)。リターン主の入力モード。
    *  - null（既定）: 旧挙動。supplyFromHexQh から intake = 循環 − 供給 を逆算
    *    （supplyFromHexQh も null なら intake = 0 ＝ 吸込なし）。
-   *  - 数値: こちらを intake の真値として採用し、供給(HEX) = 循環 − intake を派生。
-   *    実運用（リターン主・HEX換気少量）に合わせて、設計者がリターン量を直接指定できる。
+   *  - 数値: こちらを追加吸込の設計入力として使い、供給(HEX) = 循環 − 追加吸込 を求める。
+   *    リターンが主で熱交換器の換気量が少ない計画で、設計者がリターン量を直接決められる。
    */
   returnQh: number | null
   /**
@@ -213,6 +241,13 @@ export interface TerminalParams {
   zeta: number
   targetPa: number
   catalogRef?: CatalogRef
+  /**
+   * ダンパ調整（balanceTerminals）の前の値（SPEC.md §10）。最初に調整したときに入り、
+   * 調整の取り消し（undoBalanceTerminals）はここへ戻す。器材カタログ・手入力の ζ を、調整で上書きして失わないため。
+   * `zeta − beforeBalance.zeta` が、調整で足した抵抗（ダンパなどで設計風量に絞るのに要る ζ）。
+   * 使う側は、ζ・目標 Pa・入力の仕方を人が直したらこの欄を消すこと（直した値が新しい「調整前」になる）。
+   */
+  beforeBalance?: { zeta: number; targetPa: number }
 }
 
 export type NodeParams =
@@ -233,8 +268,9 @@ export type NodeParams =
  *  - 'upstream':            ファンの吸込側（SAならOA→ファン、RE系統なら吸込口→ファン）
  *
  * 質量保存により ファン流量 = 下流側端末の合計流量。
- * 上流側ノードはファン流量を分配して通過するだけで、独立した流量設定は持たない
- * （上流側端末の targetFlowQh は無視される）。
+ * 上流側の部材の風量は、ファン流量を**上流側端末の targetFlowQh の比で配った設計上の値**
+ * （SPEC.md §5。各枝の抵抗から実際の配分を解いたものではない）。上流側端末の targetFlowQh は
+ * 配る比として使い、その値どおりに流れるとは限らない。
  */
 export type FlowSide = 'upstream' | 'downstream'
 
@@ -334,6 +370,24 @@ export interface DuctLossPayload {
    * 既存の保存データには無いので任意。
    */
   report?: ReportNotes
+  /**
+   * このデータを作ったときの設計係数と計算の版（SPEC.md §2・§12）。新しく置く部材の ζ などは
+   * 作ったときの係数で部材に写されるので、別の係数で計算し直すと一部だけが切り替わる。
+   * それを計算書で知らせるための記録。2026-10 より前のデータには無い（不明として扱う）。
+   */
+  coefficientsStamp?: CoefficientsStamp
+}
+
+/** 設計係数と計算の版の記録（DuctLossPayload.coefficientsStamp・CalcResult.meta） */
+export interface CoefficientsStamp {
+  /** 係数セットの名前（DesignCoefficients.name） */
+  name: string
+  /** 出典（DesignCoefficients.source） */
+  source: string
+  /** 係数の値から作る識別（coefficientFingerprint）。名前や出典が同じでも値が違えば変わる */
+  fingerprint: string
+  /** 計算の版（ENGINE_VERSION） */
+  engineVersion: string
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -352,6 +406,34 @@ export interface NodeResult {
   dpPerMeter: number
   /** このノードが消費する圧損 (Pa) */
   lossPa: number
+  /**
+   * 計算に使った値（直管だけ）。λ と曲がりの相当長は計算のたびに決まる（SPEC.md §2）ので、
+   * 計算書・説明はここを読む（結果から逆算しない）。
+   */
+  duct?: DuctCalcDetail
+}
+
+/** 直管の計算に使った値 */
+export interface DuctCalcDetail {
+  /** 使った λ */
+  lambda: number
+  /** λ の出どころ: 直管に指定／上流の送風機の既定値／設計係数の λ／粗さから求めた（Colebrook） */
+  lambdaSource: 'duct' | 'fan' | 'coefficients' | 'roughness'
+  /** 粗さから求めたときのレイノルズ数と材料の鍵 */
+  reynolds?: number
+  material?: string
+  /** 直管の摩擦の圧損 (Pa)（λ·L/D·q） */
+  frictionPa: number
+  /** 曲がりの圧損 (Pa) */
+  bendPa: number
+  /** 曲がりの持ち方: 相当長（λ に比例）／ζ（λ によらない局部損失） */
+  bendModel: 'equivalentLength' | 'zeta'
+  /** 曲がりの相当長の合計 (m)（ζ で持つときは 0） */
+  bendLengthM: number
+  /** 曲がりの ζ の合計（角度の補正と個数を掛けたもの。相当長で持つときは λ·L曲/D に当たる値） */
+  bendZeta: number
+  /** 相当長の合計（直管長＋曲がりの相当長）(m) */
+  equivLengthM: number
 }
 
 /**
@@ -429,4 +511,17 @@ export interface CalcResult {
   fanDownstreamPa: number
   /** エアコン等の第 2 送風機（無ければ空配列） */
   secondaryMovers: SecondaryMover[]
+  /** どの版・どの係数・どの条件で出した結果か（createDuctLoss の calcSystem が入れる） */
+  meta?: CalcMeta
+}
+
+/** 計算結果の出どころ（SPEC.md §2） */
+export interface CalcMeta {
+  engineVersion: string
+  /** 計算に使った設計係数 */
+  coefficients: { name: string; source: string; fingerprint: string }
+  rho: number
+  flowScale: number
+  /** 粗さから λ を求めるときに使った気温（渡したときだけ） */
+  tempC?: number
 }

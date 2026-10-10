@@ -23,6 +23,13 @@
 
 この部品は MIT ライセンスで、**無保証**です（LICENSE）。計算の考え方は [SPEC.md](./SPEC.md) にすべて書いてあります。
 
+### この部品で分かること・分からないこと
+
+この部品は**設計計算**をします（SPEC.md §0）。部材の風量は端末の目標風量から決まる設計風量で、各枝の抵抗から実際の風量配分を解くものではありません。
+送風機の運転点は設計点から作った推定、熱交換器とエアコンは受け持つ区間ごとの評価、ダンパ調整は端末で足す抵抗（ζ）の計算です。
+**実際の風量は、施工後に測って調整してください。**
+検証の状況（自動テスト・手計算との照合まで。ほかのソフトとの比較・実測との照合はまだ）は README の「検証の状況」にあります。
+
 ### 用意するもの
 
 1. コードを書ける AI（Claude Code など）と、それを動かすパソコン
@@ -47,12 +54,21 @@
 8. **言葉は SPEC.md に合わせる。** 必要静圧・上流側／下流側・ルートなどの意味は SPEC.md の定義に従う。独自の言い換えを作らない。
 9. **数値を丸めて保存しない。** 表示だけを丸める（計算書の桁と、保存・再計算の値を分ける）。
 10. 分からないこと・決めることは、推測で埋めずに使う人に聞く。
+11. **計算の性格を隠さない。** 計算書の計算条件の「風量の扱い」「送風機の判定」「複数の送風機」の行を消さない。
+    送風機の判定は、合否と一緒に但し書き（`caveat`）と前提（`premise`）を出す。「判定しない」（`insufficient`）を合格のように見せない。
+    「実際の風量が分かる」「現場の測定の代わりになる」と書かない。
+12. **記録を消さない。** 保存データの `coefficientsStamp`（作ったときの係数）を保存のたびに残す。別の係数で計算したときに計算条件に出る「保存時の設計係数」の行を隠さない。
+13. **ダンパ調整の前の値を正しく扱う。** 端末の ζ・目標 Pa・入力の仕方・器材を人が直したら、その端末の `beforeBalance` を消す（SPEC.md §10）。
+    調整の取り消しは `undoBalanceTerminals`、既定値に戻すのは `dl.resetTerminals`（器材カタログの端末は既定値にしない）。
+15. **粗さ・曲がりの係数を使うなら、材料と形を選ぶ欄を置く。** フレキ・断熱チューブなど粗さが決まらない管は、製品の λ をダクトの `lambda` に入れさせる（粗さより優先）。
+    曲がりを ζ で持つ係数では、直管の長さは曲がりを含む中心線の長さ（相当長を足さない）と画面に書く。
+14. **レジューサの ζ は基準断面と組で扱う。** ζ を入れる欄の近くに「ζ を掛ける動圧」（`zetaBasis`）を選ぶ欄を置き、出典の定義に合わせて選ばせる（SPEC.md §4）。新しく置くものの既定は「細い側」。
 
 ---
 
 ## 3. 最初の頼み方（そのまま AI に渡せる文）
 
-> ダクト圧損計算のアプリを作りたい。計算は L'art de vie が公開している `@monosashi/ductloss-core`（ductloss-core）の部品を使う。
+> ダクト圧損計算のアプリを作りたい。計算は L'art de vie studio が公開している ductloss-core（https://github.com/lartdevie-studio/ductloss-core）の部品を使う。
 > まず、この部品の AI_GUIDE.md と SPEC.md を読み、§2 の決まりを守ること。
 >
 > 作りたいもの: （例）ブラウザで動くアプリ。1 物件ずつ系統を描いて、必要静圧と送風機の判定を見たい。保存はパソコンの中で十分。計算書を印刷したい。
@@ -97,7 +113,11 @@ const dl = createDuctLoss({
 | 計算書の計算条件 | `dl.collectCalcConditions(payload)` |
 | 端末の ζ の一覧 | `summarizeTerminalZeta(payload)` |
 | 必要換気量の照合 | `checkVentilation(payload)` |
-| ダンパ調整／取り消し | `balanceTerminals` ／ `dl.resetTerminals` |
+| ダンパ調整／取り消し／既定値に戻す | `balanceTerminals` ／ `undoBalanceTerminals` ／ `dl.resetTerminals` |
+| レジューサの両端の径と ζ の基準断面 | `reducerDiameters(nodes, node)` ／ 呼び名 `REDUCER_ZETA_BASIS_LABELS` ／ 損失を保つ換算 `reducerZetaForBasis` |
+| 計算の版と係数の記録 | `calc.meta` ／ `dl.stamp` ／ `dl.stampPayload(payload)` |
+| 粗さからの λ（係数に `friction` があるとき） | ダクトの `material` を選ぶ欄。気温は `dl.calcSystem(system, rho, 倍率, { tempC })`。直管の λ・Re は `calc.byNode[id].duct` |
+| 曲がりの ζ（係数に `bend` があるとき） | 曲がりの `shape`（形）を選ぶ欄と、器材の `zeta` の欄。曲がりの圧損は `calc.byNode[id].duct.bendPa` |
 | 機能の入／切 | `resolveFeatures` ／ 画面の機能を足すなら `defineFeatureSet([...DUCTLOSS_FEATURES, ...])` |
 | 図の自動配置 | `autoLayout(nodes, rootId)` |
 
@@ -119,6 +139,7 @@ const dl = createDuctLoss({
 - [ ] 手元の過去の計算（手計算・他のソフト）と、同じ入力で同じ値になる物件が 1 件以上ある
 - [ ] 点検の error が画面と計算書に出る
 - [ ] 保存して開き直しても、同じ値になる
+- [ ] 画面と計算書に「設計風量の計算で、実際の風量ではない」ことが出ている（計算条件の「風量の扱い」「送風機の判定」の行）
 
 ---
 

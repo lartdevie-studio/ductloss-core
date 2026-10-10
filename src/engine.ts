@@ -2,9 +2,9 @@ import type { DesignCoefficients } from './coefficients'
 import { validateCoefficients, bendEquivLength90 } from './coefficients'
 import type { CalcResult, DuctNode, DuctSystem, FlowSide, NodeKind, NodeResult, SystemType } from './types'
 import {
-  bendEquivLength, calcNodeResult, calcSystem, ductBendEquivLength, resetTerminals,
+  bendEquivLength, calcNodeResult, calcSystem, ductBendEquivLength, resetTerminals, type CalcEnv,
 } from './calculator'
-import { defaultParams, makeInitialPayload, makeNode, makeSystem } from './factory'
+import { coefficientsStampOf, defaultParams, makeInitialPayload, makeNode, makeSystem } from './factory'
 import { addChild, insertOnEdge } from './tree'
 import { explainNode, type SystemContext } from './explain'
 import { collectCalcConditions } from './report'
@@ -30,12 +30,29 @@ export function createDuctLoss(coefficients: DesignCoefficients) {
     ...coefficients,
     zeta: Object.freeze({ ...coefficients.zeta }),
     bendEquivLength90M: Object.freeze({ ...coefficients.bendEquivLength90M }),
+    ...(coefficients.friction ? { friction: deepFreeze(deepCopy(coefficients.friction)) } : {}),
+    ...(coefficients.bend ? { bend: deepFreeze(deepCopy(coefficients.bend)) } : {}),
+    ...(coefficients.notes ? { notes: Object.freeze([...coefficients.notes]) } : {}),
   })
+  const stamp = Object.freeze(coefficientsStampOf(coef))
   return {
     coefficients: coef,
-    calcSystem: (system: DuctSystem, rho: number, flowScale = 1): CalcResult => calcSystem(coef, system, rho, flowScale),
-    calcNodeResult: (nodes: Record<string, DuctNode>, node: DuctNode, flowQh: number, rho: number): NodeResult =>
-      calcNodeResult(coef, nodes, node, flowQh, rho),
+    /** 係数セットの名前・出典・値の識別と計算の版（保存データの coefficientsStamp に入れる値） */
+    stamp,
+    /** 保存データに、この係数で作った（作り直した）という記録を付ける。部材の値は変えない */
+    stampPayload: (payload: DuctLossPayload): DuctLossPayload => ({ ...payload, coefficientsStamp: { ...stamp } }),
+    /** env.tempC は粗さから λ を求めるときの気温（省くと 20℃。payload.airTempC を渡す） */
+    calcSystem: (system: DuctSystem, rho: number, flowScale = 1, env: CalcEnv = {}): CalcResult => ({
+      ...calcSystem(coef, system, rho, flowScale, env),
+      meta: {
+        engineVersion: stamp.engineVersion,
+        coefficients: { name: stamp.name, source: stamp.source, fingerprint: stamp.fingerprint },
+        rho, flowScale,
+        ...(env.tempC != null ? { tempC: env.tempC } : {}),
+      },
+    }),
+    calcNodeResult: (nodes: Record<string, DuctNode>, node: DuctNode, flowQh: number, rho: number, env: CalcEnv = {}): NodeResult =>
+      calcNodeResult(coef, nodes, node, flowQh, rho, env),
     bendEquivLength90: (diameterMm: number) => bendEquivLength90(coef, diameterMm),
     bendEquivLength: (diameterMm: number, angleDeg: number, count: number) => bendEquivLength(coef, diameterMm, angleDeg, count),
     ductBendEquivLength: (diameterMm: number, params: Parameters<typeof ductBendEquivLength>[2]) =>
@@ -56,3 +73,18 @@ export function createDuctLoss(coefficients: DesignCoefficients) {
 }
 
 export type DuctLossEngine = ReturnType<typeof createDuctLoss>
+
+/** 係数（数・文字・入れ子の object だけ）の写し。部品は ES2022 だけで動くので structuredClone は使わない */
+function deepCopy<T>(o: T): T {
+  if (o === null || typeof o !== 'object') return o
+  if (Array.isArray(o)) return o.map(deepCopy) as T
+  return Object.fromEntries(Object.entries(o as Record<string, unknown>).map(([k, v]) => [k, deepCopy(v)])) as T
+}
+
+function deepFreeze<T>(o: T): T {
+  if (o && typeof o === 'object') {
+    for (const v of Object.values(o as Record<string, unknown>)) deepFreeze(v)
+    Object.freeze(o)
+  }
+  return o
+}

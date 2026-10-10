@@ -1,5 +1,6 @@
 import type { PQPoint } from './pqcurve'
-import { fitResistanceK, interpFanP, findOperatingPoint, normalizeFanPoints } from './pqcurve'
+import { fitResistanceK, interpFanP, findOperatingPoints, normalizeFanPoints } from './pqcurve'
+import { CHARACTERISTIC_RHO } from './physics'
 
 // ─────────────────────────────────────────────────────────────
 // 送風機 1 台の合否判定
@@ -56,11 +57,28 @@ export interface MoverVerdict {
   flowRatio: number | null
   /** 系統の抵抗係数 k（ΔP = k·Q²） */
   k: number
-  /** 判定の但し書き（風量が違う・情報が足りない等）。無ければ null */
+  /** 判定の但し書き（風量が違う・情報が足りない・前提つき等）。無ければ null */
   caveat: string | null
+  /**
+   * どの判定にも付く前提（SPEC.md §7）。運転点・合否は、設計点（設定風量・必要静圧）を通る
+   * ΔP = k·Q² で系統の抵抗を表した推定で、経路ごとの圧損がそろい風量の配分が設計どおりである
+   * ことを前提にする。実際の風量・調整後の風量を示すものではない。
+   */
+  premise: string
+  /**
+   * 機器の特性に掛けた倍率（計算の ρ ÷ 特性の ρ 1.20）。ρ を渡さないか 1.20 なら 1。
+   * availableStaticPa・operating は、この倍率を掛けた特性で求めた値
+   */
+  densityRatio: number
   /** 画面・PDF にそのまま出せる 1 行 */
   summary: string
 }
+
+/** どの判定にも付く前提（MoverVerdict.premise） */
+export const VERDICT_PREMISE =
+  '設計点（設定風量・必要静圧）を通る ΔP = k·Q² で系統の抵抗を表した推定です。'
+  + '経路ごとの圧損がそろい（ダンパ調整が施工で実現され）、風量の配分が設計どおりであることを前提にしています。'
+  + '実際の風量は施工後の測定・調整で確かめてください'
 
 /**
  * 系統の抵抗係数 k を、設計点（設定風量・必要静圧）から求める。
@@ -99,6 +117,7 @@ function characteristicPoints(
  * @param maxStaticPa   機器の機外静圧。未設定は null
  * @param pqPoints      機器の P-Q 特性（カタログの点列）。未設定は null
  * @param maxStaticAtQh 機外静圧が規定される風量（定格風量）。未設定は null
+ * @param rho           計算の空気密度。渡せば機器の特性を ρ / 1.20 倍にして比べる（特性は標準空気の値とみなす。SPEC.md §7）
  */
 export function judgeMover(
   requiredPa: number,
@@ -106,12 +125,20 @@ export function judgeMover(
   maxStaticPa: number | null,
   pqPoints: PQPoint[] | null | undefined,
   maxStaticAtQh?: number | null,
+  rho?: number,
 ): MoverVerdict {
   const k = systemResistanceK(requiredPa, designQh)
-  const { pts, basis } = characteristicPoints(maxStaticPa, maxStaticAtQh, pqPoints)
+  const densityRatio = rho != null && rho > 0 && Number.isFinite(rho) ? rho / CHARACTERISTIC_RHO : 1
+  const scaled = Math.abs(densityRatio - 1) > 1e-9
+  const raw = characteristicPoints(maxStaticPa, maxStaticAtQh, pqPoints)
+  const basis = raw.basis
+  const pts = scaled ? raw.pts.map(p => ({ q: p.q, p: p.p * densityRatio })) : raw.pts
+  const premise = scaled
+    ? `${VERDICT_PREMISE}。機器の特性は標準空気（1.20 kg/m³）での値とみなし、空気密度 ${rho!.toFixed(3)} kg/m³ に合わせて静圧を ${densityRatio.toFixed(3)} 倍にして比べています`
+    : VERDICT_PREMISE
 
   const base = {
-    designQh, requiredPa, k,
+    designQh, requiredPa, k, premise, densityRatio,
     availableStaticPa: null as number | null,
     marginPa: null as number | null,
     operating: null as PQPoint | null,
@@ -145,12 +172,13 @@ export function judgeMover(
   // 「必要 > 機外静圧」なら確実に足りない。そうでなくても、設定風量で
   // その静圧が出る保証は無いので合格とは言えない。
   if (basis === 'flatMax') {
-    const maxPa = maxStaticPa as number
+    const maxPa = pts[0].p   // 空気密度の倍率を掛けた値（maxStaticPa そのものではない）
     if (requiredPa > maxPa) {
       return {
         ...base, level: 'ng', basis,
         availableStaticPa: maxPa, marginPa: maxPa - requiredPa,
-        caveat: '機外静圧がどの風量での値か未入力のため、風量を問わず一定とみなしています',
+        caveat: '機外静圧がどの風量での値か未入力のため、どの風量でもこの値を超える静圧は出ないとみなしています'
+          + '（最大静圧の値なら正しい判定です。定格風量での値なら、設定風量が定格より少ないときは出せることがあるので、定格風量を入れてください）',
         summary: `必要静圧 ${fmtP(requiredPa)} Pa が機外静圧 ${fmtP(maxPa)} Pa を超えています`
           + ` → 設定風量 ${fmtQ(qh)} m³/h は確保できません`,
       }
@@ -182,7 +210,7 @@ export function judgeMover(
     const right = pts.reduce((a, b) => (b.q >= a.q ? b : a))
     const needAtRight = k * right.q * right.q
     if (right.p < needAtRight - 1e-9) {
-      const operating = findOperatingPoint(pts, k)
+      const operating = findOperatingPoints(pts, k)[0] ?? null
       const flowRatio = operating ? operating.q / qh : null
       return {
         ...base, level: 'ng', basis,
@@ -208,11 +236,68 @@ export function judgeMover(
     }
   }
 
+  // ── 特性の左端より少ない風量（外挿しない） ──
+  //
+  // 特性の点は左端（最小風量）から始まることが多い。interpFanP は左端より少ない風量に
+  // 左端の静圧を返す（クランプ）が、それは「その風量で出せる静圧」ではない。
+  // 以前はその値で ok/ng を決めていたため、左端の静圧 < 必要静圧 のときに根拠の無い
+  // 「確保できません」を出し、左端の静圧 ≥ 必要静圧 のときに前提を書かない合格を出していた。
+  //   左端の静圧 ≥ 必要静圧 → 右下がりの特性（風量が減ると静圧は上がる）なら確保できる。前提つきの ok
+  //   左端の静圧 <  必要静圧 → 特性からは読めない。保留（ng とは言えない）
+  const crossings = basis === 'curve' ? findOperatingPoints(pts, k) : []
+  const minQ = Math.min(...pts.map(p => p.q))
+  if (basis === 'curve' && qh < minQ - 1e-9) {
+    const left = pts.reduce((a, b) => (b.q < a.q ? b : a))
+    const operating = crossings[0] ?? null
+    const flowRatio = operating ? operating.q / qh : null
+    if (left.p >= requiredPa - 1e-9) {
+      return {
+        ...base, level: 'ok', basis,
+        availableStaticPa: null, marginPa: null, operating, flowRatio,
+        caveat: `設定風量 ${fmtQ(qh)} m³/h は P-Q 特性の範囲（${fmtQ(minQ)} m³/h から）より少ないため、`
+          + `特性が右下がり（風量が減ると静圧が上がる）であることを前提に、${fmtQ(minQ)} m³/h での静圧 `
+          + `${fmtP(left.p)} Pa 以上が出るとみなしています。低風量側に鞍部がある機器では下回ることがあるので、`
+          + '確かめるには低風量側の点を足してください',
+        summary: `設定風量 ${fmtQ(qh)} m³/h が P-Q 特性の範囲外（${fmtQ(minQ)} m³/h から）`
+          + `／特性の左端の静圧 ${fmtP(left.p)} Pa ≥ 必要静圧 ${fmtP(requiredPa)} Pa`
+          + '／→ 右下がりの特性なら設定風量を確保できます（前提つき）',
+      }
+    }
+    return {
+      ...base, level: 'insufficient', basis,
+      availableStaticPa: null, marginPa: null, operating, flowRatio,
+      caveat: `設定風量 ${fmtQ(qh)} m³/h は P-Q 特性の範囲（${fmtQ(minQ)} m³/h から）より少なく、`
+        + `特性の左端の静圧 ${fmtP(left.p)} Pa は必要静圧 ${fmtP(requiredPa)} Pa を下回ります。`
+        + 'その風量で出せる静圧は特性から読めないため判定できません',
+      summary: `設定風量 ${fmtQ(qh)} m³/h が P-Q 特性の範囲外です（特性は ${fmtQ(minQ)} m³/h から）。`
+        + '低風量側の点を足すか、機器を見直してください',
+    }
+  }
+
   // ── 特性から「設定風量で出せる静圧」を読む ──
   const availableStaticPa = interpFanP(pts, qh)
   const marginPa = availableStaticPa - requiredPa
-  const operating = basis === 'curve' ? findOperatingPoint(pts, k) : null
+  const operating = crossings[0] ?? null
   const flowRatio = operating && qh > 0 ? operating.q / qh : null
+
+  // 交点が複数ある特性（鞍部）: 最初の交点（風量の小さい側）が設定風量より少ないなら、
+  // 設計点で静圧が足りていても、手前の交点で運転が落ち着くおそれがある。
+  // どの交点で安定するかは判定しない（交点を求めることは安定性の判定ではない）ので保留にする。
+  if (basis === 'curve' && crossings.length > 1) {
+    const list = crossings.map(c => `${fmtQ(c.q)} m³/h・${fmtP(c.p)} Pa`).join('、')
+    const multiCaveat = `運転点（P-Q 特性と系統の抵抗の交点）が ${crossings.length} つあります（${list}）。`
+      + '特性に鞍部があり、どの点で運転が落ち着くかはこの計算では判定しません'
+    if (operating && operating.q < qh * (1 - 1e-6)) {
+      return {
+        ...base, level: 'insufficient', basis,
+        availableStaticPa, marginPa, operating, flowRatio,
+        caveat: multiCaveat,
+        summary: `設定風量 ${fmtQ(qh)} m³/h で機器が出せる静圧 ${fmtP(availableStaticPa)} Pa`
+          + `／必要静圧 ${fmtP(requiredPa)} Pa／最初の運転点 ${fmtQ(operating.q)} m³/h（設定風量の `
+          + `${((flowRatio ?? 0) * 100).toFixed(0)}%）／→ 交点が複数あるため判定を保留します`,
+      }
+    }
+  }
 
   // 定格 1 点のときは、設定風量との位置関係で言えることが変わる。
   // ファン特性は右下がり（風量が増えると静圧は落ちる）なので:
@@ -226,35 +311,58 @@ export function judgeMover(
   let level: VerdictLevel = ok ? 'ok' : 'ng'
 
   if (basis === 'ratedPoint') {
-    const ratedQ = pts[0].q
+    const rated = pts[0]
+    const ratedQ = rated.q
     const near = Math.abs(ratedQ - qh) <= Math.max(1, ratedQ * 0.05)
     if (near) {
       caveat = `機外静圧の定格風量（${fmtQ(ratedQ)} m³/h）と設定風量が近いため、この 1 点で判定しています`
     } else if (qh < ratedQ) {
-      // 単調右下がりなら定格点より高い静圧が出る。ただし前傾翼（シロッコ）は
-      // 締切側と最高効率点の間に鞍部を持ち、そこでは定格点より低いことがある。
-      // 「安全側」と断定せず、確かめるなら P-Q が要ると書く。
-      caveat = `設定風量 ${fmtQ(qh)} m³/h は定格風量 ${fmtQ(ratedQ)} m³/h より少ないため、`
-        + '通常はこれ以上の静圧が出ます。ただし特性に鞍部（サージング領域）がある機器では'
-        + '定格点を下回ることがあるので、確かめるには P-Q 特性が要ります'
+      // 定格より少ない風量。右下がりの特性なら定格点より高い静圧が出るが、前向き羽根（多翼）の
+      // 機器は低風量側に鞍部を持ち、そこでは定格点を下回ることがある。1 点からは読めない。
+      //   定格の静圧 ≥ 必要静圧 → 前提つきの ok（出せる静圧の値は書かない）
+      //   定格の静圧 <  必要静圧 → 設定風量ではもっと出るかもしれないので ng とは言えない。保留
+      if (!ok) {
+        return {
+          ...base, level: 'insufficient', basis,
+          availableStaticPa: null, marginPa: null, operating: null, flowRatio: null,
+          caveat: `設定風量 ${fmtQ(qh)} m³/h は定格風量 ${fmtQ(ratedQ)} m³/h より少なく、`
+            + 'その風量で出せる静圧は定格点の 1 点からは読めません',
+          summary: `必要静圧 ${fmtP(requiredPa)} Pa は定格風量での機外静圧 ${fmtP(rated.p)} Pa を超えていますが、`
+            + `設定風量 ${fmtQ(qh)} m³/h は定格より少ないため、確保できるかは P-Q 特性を入れないと分かりません`,
+        }
+      }
+      return {
+        ...base, level: 'ok', basis,
+        availableStaticPa: null, marginPa: null, operating: null, flowRatio: null,
+        caveat: `設定風量 ${fmtQ(qh)} m³/h は定格風量 ${fmtQ(ratedQ)} m³/h より少ないため、`
+          + '特性が右下がり（風量が減ると静圧が上がる）であることを前提に、定格点の静圧以上が出るとみなしています。'
+          + '低風量側に鞍部がある機器（多翼送風機など）では下回ることがあるので、確かめるには P-Q 特性が要ります',
+        summary: `定格風量 ${fmtQ(ratedQ)} m³/h での機外静圧 ${fmtP(rated.p)} Pa ≥ 必要静圧 ${fmtP(requiredPa)} Pa`
+          + `／設定風量 ${fmtQ(qh)} m³/h は定格より少ない／→ 右下がりの特性なら設定風量を確保できます（前提つき）`,
+      }
     } else {
-      // 定格より多い風量を要求している。出せる静圧は定格値より小さいはずで、
-      // どれだけ小さいかは 1 点では分からない。
+      // 定格より多い風量。出せる静圧は定格値より小さいはずで、どれだけ小さいかは 1 点では分からない。
       caveat = `設定風量 ${fmtQ(qh)} m³/h は定格風量 ${fmtQ(ratedQ)} m³/h を超えています。`
         + 'この風量で出せる静圧は定格値より小さくなるため、P-Q 特性を入れないと判定できません'
       if (ok) {
-        // 「必要 ≤ 定格静圧」でも、設定風量で出せるかは確認できない
-        ok = false
-        level = 'insufficient'
         return {
-          ...base, level, basis,
+          ...base, level: 'insufficient', basis,
           availableStaticPa: null, marginPa: null, operating: null, flowRatio: null,
           caveat,
-          summary: `必要静圧 ${fmtP(requiredPa)} Pa は定格風量での機外静圧 ${fmtP(pts[0].p)} Pa 以内ですが、`
+          summary: `必要静圧 ${fmtP(requiredPa)} Pa は定格風量での機外静圧 ${fmtP(rated.p)} Pa 以内ですが、`
             + `設定風量 ${fmtQ(qh)} m³/h を確保できるかは P-Q 特性を入れないと分かりません`,
         }
       }
-      // 必要静圧が定格静圧すら超えている → 設定風量ではさらに足りない。確実に ng
+      // 必要静圧が定格の静圧すら超えている → 設定風量ではさらに足りない。ng は確定するが、
+      // 設定風量で出せる静圧の値は分からないので書かない
+      return {
+        ...base, level: 'ng', basis,
+        availableStaticPa: null, marginPa: null, operating: null, flowRatio: null,
+        caveat: `設定風量 ${fmtQ(qh)} m³/h は定格風量 ${fmtQ(ratedQ)} m³/h を超えており、`
+          + '定格点ですでに必要静圧に届いていません',
+        summary: `定格風量 ${fmtQ(ratedQ)} m³/h での機外静圧 ${fmtP(rated.p)} Pa が必要静圧 ${fmtP(requiredPa)} Pa を下回ります`
+          + `／設定風量 ${fmtQ(qh)} m³/h は定格より多いので、さらに足りません／→ 設定風量を確保できません`,
+      }
     }
   }
 

@@ -1,0 +1,285 @@
+{
+  "title": "検算例 2: 熱交換器＋ダクト形エアコン（第 2 の送風機）",
+  "coefficients": {
+    "name": "検算例 2 用（架空）",
+    "source": "examples/02-hex-aircon のために作った値。設計には使わないこと",
+    "lambda": 0.035,
+    "bendEquivLength90M": {
+      "100": 0.4,
+      "150": 0.6,
+      "200": 0.8
+    },
+    "zeta": {
+      "branch": 0.8,
+      "reducer": 0.2,
+      "terminal": 1.5,
+      "filter": 3,
+      "aircon": 0
+    },
+    "terminalPa": 6,
+    "filterPa": 20
+  },
+  "payload": {
+    "schemaVersion": 4,
+    "rho": 1.2,
+    "systems": [
+      {
+        "id": "sa",
+        "name": "給気（全館空調）",
+        "type": "SA",
+        "rootId": "hex",
+        "nodes": {
+          "hex": {
+            "id": "hex",
+            "x": 0,
+            "y": 0,
+            "label": "熱交換器",
+            "parentId": null,
+            "childIds": [
+              "oa",
+              "trunk"
+            ],
+            "side": "downstream",
+            "params": {
+              "kind": "fan",
+              "maxStaticPa": 80,
+              "maxStaticAtQh": 100,
+              "notch": "",
+              "defaultLambda": 0.035
+            }
+          },
+          "oa": {
+            "id": "oa",
+            "x": 0,
+            "y": 0,
+            "label": "外気ダクト",
+            "parentId": "hex",
+            "childIds": [
+              "hood"
+            ],
+            "side": "upstream",
+            "params": {
+              "kind": "duct",
+              "diameterMm": 100,
+              "lengthM": 2,
+              "bendAngleDeg": 90,
+              "bendCount": 0,
+              "bends": [
+                {
+                  "angleDeg": 90,
+                  "count": 1
+                }
+              ],
+              "lambda": null
+            }
+          },
+          "hood": {
+            "id": "hood",
+            "x": 0,
+            "y": 0,
+            "label": "外気フード",
+            "parentId": "oa",
+            "childIds": [],
+            "side": "upstream",
+            "params": {
+              "kind": "terminal",
+              "diameterMm": 100,
+              "targetFlowQh": 100,
+              "pressureMode": "zeta",
+              "zeta": 2.5,
+              "targetPa": 0
+            }
+          },
+          "trunk": {
+            "id": "trunk",
+            "x": 0,
+            "y": 0,
+            "label": "熱交 → エアコン",
+            "parentId": "hex",
+            "childIds": [
+              "ac"
+            ],
+            "side": "downstream",
+            "params": {
+              "kind": "duct",
+              "diameterMm": 100,
+              "lengthM": 6,
+              "bendAngleDeg": 90,
+              "bendCount": 0,
+              "bends": [
+                {
+                  "angleDeg": 90,
+                  "count": 2
+                }
+              ],
+              "lambda": null
+            }
+          },
+          "ac": {
+            "id": "ac",
+            "x": 0,
+            "y": 0,
+            "label": "エアコン",
+            "parentId": "trunk",
+            "childIds": [
+              "s1",
+              "s2",
+              "ra"
+            ],
+            "side": "downstream",
+            "params": {
+              "kind": "aircon",
+              "diameterMm": 200,
+              "pressureMode": "zeta",
+              "zeta": 0,
+              "targetPa": 0,
+              "supplyFromHexQh": null,
+              "returnQh": 300,
+              "maxStaticPa": null,
+              "maxStaticAtQh": null,
+              "pqPoints": [
+                {
+                  "q": 0,
+                  "p": 60
+                },
+                {
+                  "q": 300,
+                  "p": 45
+                },
+                {
+                  "q": 500,
+                  "p": 20
+                },
+                {
+                  "q": 600,
+                  "p": 0
+                }
+              ]
+            }
+          },
+          "s1": {
+            "id": "s1",
+            "x": 0,
+            "y": 0,
+            "label": "給気 1",
+            "parentId": "ac",
+            "childIds": [
+              "t1"
+            ],
+            "side": "downstream",
+            "params": {
+              "kind": "duct",
+              "diameterMm": 150,
+              "lengthM": 5,
+              "bendAngleDeg": 90,
+              "bendCount": 0,
+              "bends": [
+                {
+                  "angleDeg": 90,
+                  "count": 1
+                }
+              ],
+              "lambda": null
+            }
+          },
+          "t1": {
+            "id": "t1",
+            "x": 0,
+            "y": 0,
+            "label": "吹出口 1",
+            "parentId": "s1",
+            "childIds": [],
+            "side": "downstream",
+            "params": {
+              "kind": "terminal",
+              "diameterMm": 150,
+              "targetFlowQh": 200,
+              "pressureMode": "zeta",
+              "zeta": 1.5,
+              "targetPa": 0
+            }
+          },
+          "s2": {
+            "id": "s2",
+            "x": 0,
+            "y": 0,
+            "label": "給気 2",
+            "parentId": "ac",
+            "childIds": [
+              "t2"
+            ],
+            "side": "downstream",
+            "params": {
+              "kind": "duct",
+              "diameterMm": 150,
+              "lengthM": 3,
+              "bendAngleDeg": 90,
+              "bendCount": 0,
+              "bends": [],
+              "lambda": null
+            }
+          },
+          "t2": {
+            "id": "t2",
+            "x": 0,
+            "y": 0,
+            "label": "吹出口 2",
+            "parentId": "s2",
+            "childIds": [],
+            "side": "downstream",
+            "params": {
+              "kind": "terminal",
+              "diameterMm": 150,
+              "targetFlowQh": 200,
+              "pressureMode": "zeta",
+              "zeta": 1.5,
+              "targetPa": 0
+            }
+          },
+          "ra": {
+            "id": "ra",
+            "x": 0,
+            "y": 0,
+            "label": "リターン",
+            "parentId": "ac",
+            "childIds": [
+              "grille"
+            ],
+            "side": "upstream",
+            "params": {
+              "kind": "duct",
+              "diameterMm": 200,
+              "lengthM": 2,
+              "bendAngleDeg": 90,
+              "bendCount": 0,
+              "bends": [
+                {
+                  "angleDeg": 90,
+                  "count": 1
+                }
+              ],
+              "lambda": null
+            }
+          },
+          "grille": {
+            "id": "grille",
+            "x": 0,
+            "y": 0,
+            "label": "リターン口",
+            "parentId": "ra",
+            "childIds": [],
+            "side": "upstream",
+            "params": {
+              "kind": "terminal",
+              "diameterMm": 200,
+              "targetFlowQh": 300,
+              "pressureMode": "zeta",
+              "zeta": 1.0,
+              "targetPa": 0
+            }
+          }
+        }
+      }
+    ]
+  }
+}

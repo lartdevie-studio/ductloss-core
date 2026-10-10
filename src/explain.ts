@@ -1,5 +1,5 @@
 import type { DuctNode, NodeResult, SecondaryMover } from './types'
-import { effectiveDiameterMm } from './tree'
+import { effectiveDiameterMm, reducerDiameters, REDUCER_ZETA_BASIS_LABELS } from './tree'
 import type { DesignCoefficients } from './coefficients'
 import { ductBends, bendEquivLength } from './calculator'
 
@@ -7,7 +7,7 @@ import { ductBends, bendEquivLength } from './calculator'
 // 学習者向け「なぜこの圧損か」解説データの生成
 //
 // 各ノードの圧損計算を「式 → 実数代入 → 結果」のステップに分解し、
-// さらに ΔP–Q 曲線（ΔP ∝ Q²）の動作点をプロットするための
+// さらに ΔP–Q 曲線（ΔP ∝ Q²）の設計点をプロットするための
 // データを生成する。
 // ─────────────────────────────────────────────────────────────
 
@@ -33,7 +33,7 @@ export interface NodeExplanation {
   steps: ExplainStep[]
   /** ΔP–Q 曲線のサンプル点（0 〜 2×設計風量） */
   curve: CurvePoint[]
-  /** 動作点（設計風量での圧損） */
+  /** 設計点（設計風量での圧損）。実際の運転点ではない */
   designPoint: CurvePoint
   /** 学習ポイント（例: 風量2倍 → 圧損4倍） */
   takeaway: string
@@ -58,7 +58,7 @@ function buildQuadraticCurve(qDesign: number, paDesign: number): CurvePoint[] {
   return pts
 }
 
-/** 系統レベルの文脈（ファンの運転点表示に使用） */
+/** 系統レベルの文脈（ファンの設計点の表示に使用） */
 export interface SystemContext {
   /** ファン総風量 (m³/h) */
   fanFlowQh: number
@@ -71,12 +71,15 @@ export interface SystemContext {
   nodes?: Record<string, DuctNode>
   /** 第 2 の送風機（calc.secondaryMovers）。エアコンの風量の内訳を計算と同じ値で書く */
   secondaryMovers?: SecondaryMover[]
+  /** 必要静圧の内訳（calc.fanUpstreamPa / fanDownstreamPa）。渡されれば式に数を入れる */
+  fanUpstreamPa?: number
+  fanDownstreamPa?: number
 }
 
 /**
  * ノードの計算解説を生成する。
  * @param rho 空気密度（動圧の式表示に使用）
- * @param sys 系統文脈（ファンの運転点 = 系統抵抗曲線上の必要静圧点 を表示する場合に渡す）
+ * @param sys 系統文脈（ファンの設計点 = 系統抵抗曲線上の必要静圧点 を表示する場合に渡す）
  */
 export function explainNode(coef: DesignCoefficients, node: DuctNode, result: NodeResult, rho: number, sys?: SystemContext): NodeExplanation {
   const q = result.flowQh        // 設計風量 m³/h
@@ -122,28 +125,73 @@ export function explainNode(coef: DesignCoefficients, node: DuctNode, result: No
     case 'duct': {
       const p = node.params
       const D = p.diameterMm / 1000
-      // 計算が実際に使った λ を結果から引き戻す（Pa/m = λ·q/D）。ダクトに λ が無いときは
-      // 上流のファンの値が使われるので、ここで既定値を出すと計算と違う λ を見せてしまう。
-      const lambda = p.lambda ?? (qd > 0 ? result.dpPerMeter * D / qd : coef.lambda)
+      const det = result.duct
+      // 計算が実際に使った λ（結果に入っている。古い結果なら Pa/m = λ·q/D から引き戻す）。ダクトに λ が無いときは
+      // 上流のファンの値・粗さから求めた値が使われるので、ここで既定値を出すと計算と違う λ を見せてしまう。
+      const lambda = det?.lambda ?? p.lambda ?? (qd > 0 ? result.dpPerMeter * D / qd : coef.lambda)
       const bends = ductBends(p)
-      const lBend = bends.reduce((s, b) => s + bendEquivLength(coef, p.diameterMm, b.angleDeg, b.count), 0)
+      const bendText = bends.length === 0 ? '曲がりなし' : bends.map(b => `${b.angleDeg}° × ${b.count} 個`).join(' ＋ ')
+      const lambdaSteps: ExplainStep[] = det?.lambdaSource === 'roughness'
+        ? [
+            {
+              label: 'レイノルズ数 Re',
+              formula: 'Re = v·D / ν（ν は空気の動粘性係数）',
+              substitution: `= ${fmt(v, 2)} × ${fmt(D, 3)} / ν`,
+              result: `${fmt(det.reynolds ?? 0, 0)}`,
+            },
+            {
+              label: '摩擦係数 λ',
+              formula: `1/√λ = −2·log₁₀(ε/(3.7·D) + 2.51/(Re·√λ))（Colebrook の式）`,
+              substitution: `ε = ${coef.friction?.model === 'roughness' ? (coef.friction.materials[det.material ?? '']?.roughnessMm ?? '?') : '?'} mm（${coef.friction?.model === 'roughness' ? (coef.friction.materials[det.material ?? '']?.label ?? '') : ''}）`,
+              result: `${fmt(lambda, 4)}`,
+            },
+          ]
+        : [{
+            label: '摩擦係数 λ',
+            formula: det?.lambdaSource === 'duct' ? 'λ（この直管に指定）'
+              : det?.lambdaSource === 'fan' ? 'λ（上流の送風機の既定値）'
+              : det?.lambdaSource === 'coefficients' ? 'λ（設計係数の値）' : 'λ',
+            substitution: '',
+            result: `${lambda}`,
+          }]
+      const perMeter: ExplainStep = {
+        label: '単位長さ圧損',
+        formula: 'Pa/m = λ·q / D',
+        substitution: `= ${fmt(lambda, 4)} × ${fmt(qd, 2)} / ${fmt(D, 3)}`,
+        result: `${fmt(result.dpPerMeter, 2)} Pa/m`,
+      }
+      if (det?.bendModel === 'zeta') {
+        // 曲がりは λ によらない局部損失。直管の長さ L は曲がりを含む中心線の長さ
+        return {
+          title: 'ダクトの圧損（直管 + 曲がり）',
+          intro: '直管の摩擦（Darcy-Weisbach）に、曲がりの局部損失（ζ×動圧）を足して求めます。曲がりの ζ は形ごとの 90° の値に角度の補正を掛けたものです。',
+          headlineFormula: 'ΔP = λ·(L / D)·q ＋ Σζ曲·q',
+          steps: [
+            ...velocityAndQSteps(p.diameterMm),
+            ...lambdaSteps,
+            perMeter,
+            { label: '直管の圧損', formula: 'ΔP直 = Pa/m × L', substitution: `= ${fmt(result.dpPerMeter, 2)} × ${fmt(p.lengthM, 2)}`, result: `${fmt(det.frictionPa, 2)} Pa` },
+            { label: '曲がりの ζ', formula: 'Σζ曲 = Σ ζ90 × 角度の補正 × 個数', substitution: bendText, result: `${fmt(det.bendZeta, 3)}` },
+            { label: '曲がりの圧損', formula: 'ΔP曲 = Σζ曲·q', substitution: `= ${fmt(det.bendZeta, 3)} × ${fmt(qd, 2)}`, result: `${fmt(det.bendPa, 2)} Pa` },
+            { label: '圧損 ΔP', formula: 'ΔP = ΔP直 ＋ ΔP曲', substitution: `= ${fmt(det.frictionPa, 2)} + ${fmt(det.bendPa, 2)}`, result: `${fmt(lossPa, 2)} Pa` },
+          ],
+          curve, designPoint, takeaway,
+        }
+      }
+      const lBend = det?.bendLengthM ?? bends.reduce((s, b) => s + bendEquivLength(coef, p.diameterMm, b.angleDeg, b.count), 0)
       const lEquiv = p.lengthM + lBend
       return {
         title: 'ダクトの圧損（直管 + 曲がり）',
-        intro: '直管の摩擦と曲がりの局部抵抗を、相当長に換算して動圧に掛けて求めます（Darcy-Weisbach）。',
+        intro: '直管の摩擦と曲がりを、相当長に換算して動圧に掛けて求めます（Darcy-Weisbach）。曲がりの損失は相当長 × λ なので、λ に比例します。',
         headlineFormula: 'ΔP = λ·(L_相当 / D)·q',
         steps: [
           ...velocityAndQSteps(p.diameterMm),
-          {
-            label: '単位長さ圧損',
-            formula: 'Pa/m = λ·q / D',
-            substitution: `= ${fmt(lambda, 3)} × ${fmt(qd, 2)} / ${fmt(D, 3)}`,
-            result: `${fmt(result.dpPerMeter, 2)} Pa/m`,
-          },
+          ...lambdaSteps,
+          perMeter,
           {
             label: '曲がり相当長',
             formula: 'L_曲 = L₉₀ × (角度/90) × 個数',
-            substitution: bends.length === 0 ? '曲がりなし' : bends.map(b => `${b.angleDeg}° × ${b.count} 個`).join(' ＋ '),
+            substitution: bendText,
             result: `${fmt(lBend, 2)} m`,
           },
           {
@@ -236,15 +284,29 @@ export function explainNode(coef: DesignCoefficients, node: DuctNode, result: No
     }
     case 'reducer': {
       const p = node.params
+      // ζ の基準断面の径で動圧を求める（SPEC.md §4）。系統が渡されなければ保存値から同じ規則で決める
+      const d = sys?.nodes ? reducerDiameters(sys.nodes, node) : null
+      const basis = d?.basis ?? p.zetaBasis ?? 'treeLeaf'
+      const fromMm = d?.rootSideMm ?? p.diameterFromMm
+      const toMm = d?.leafSideMm ?? p.diameterToMm
+      const refMm = d?.referenceMm ?? (
+        basis === 'small' ? Math.min(fromMm, toMm)
+        : basis === 'large' ? Math.max(fromMm, toMm)
+        : basis === 'flowInlet' ? ((node.side ?? 'downstream') === 'upstream' ? toMm : fromMm)
+        : basis === 'flowOutlet' ? ((node.side ?? 'downstream') === 'upstream' ? fromMm : toMm)
+        : toMm)
+      const basisLabel = REDUCER_ZETA_BASIS_LABELS[basis]
       return {
         title: 'レデューサ（径変更）の圧損',
-        intro: '径変更部の局部抵抗。動圧は流速の速い縮小後の径で評価します。',
-        headlineFormula: 'ΔP = ζ·q（縮小後の径で動圧）',
+        intro: `径変更部の局部抵抗。ζ は「${basisLabel}」の動圧を基準にした値として、その径（φ${fmt(refMm, 0)}）の動圧に掛けます。`
+          + `両端の径は 送風機の側 φ${fmt(fromMm, 0)} ／ 端末の側 φ${fmt(toMm, 0)} です。`
+          + 'ζ は出典の表がどの断面の動圧で定義しているかに合わせて選びます（細い側の動圧で定義する表が多い）。',
+        headlineFormula: `ΔP = ζ·q（q は${basisLabel}の動圧）`,
         steps: [
-          ...velocityAndQSteps(usedDiameter(p.diameterToMm)),
+          ...velocityAndQSteps(refMm),
           {
             label: 'レデューサ ζ',
-            formula: 'ζ（径比・角度による）',
+            formula: `ζ（${basisLabel}の動圧が基準）`,
             substitution: '',
             result: `${fmt(p.zeta, 2)}`,
           },
@@ -318,26 +380,47 @@ export function explainNode(coef: DesignCoefficients, node: DuctNode, result: No
     }
     case 'fan': {
       // 系統抵抗曲線 ΔP = k·Q²（k は必要静圧 / 総風量² から決まる）。
-      // 運転点（= 必要静圧点）は (fanFlowQh, fanRequiredPa)。
+      // 設計点（= 必要静圧点）は (fanFlowQh, fanRequiredPa)。実際の運転点は P-Q 特性との交点（SPEC.md §7）
       const qFan = sys?.fanFlowQh ?? q
       const paReq = sys?.fanRequiredPa ?? 0
       const fanCurve = buildQuadraticCurve(qFan, paReq)
       const fanDesign = { q: qFan, pa: paReq }
+      // エアコン（第 2 の送風機）がある系統では、主送風機の受け持ちが変わる（SPEC.md §6）。式もそれに合わせる
+      const withAircon = (sys?.secondaryMovers?.length ?? 0) > 0
+      const up = sys?.fanUpstreamPa
+      const down = sys?.fanDownstreamPa
       return {
         title: 'ファン（送風機）',
-        intro: '送風機は、担当する経路の圧損に見合う静圧を出す機器です。系統の抵抗は ΔP = k·Q² で表され、設定風量と必要静圧の点を通ります（SPEC.md §6・§7）。',
+        intro: '送風機は、担当する経路の圧損に見合う静圧を出す機器です。系統の抵抗は ΔP = k·Q² で表し、設定風量と必要静圧の点（設計点）を通るとします（SPEC.md §6・§7）。'
+          + (withAircon ? 'この系統にはエアコン（第 2 の送風機）があり、主送風機はエアコンの手前までを受け持ちます。2 台の圧力・風量の相互作用は解きません。' : ''),
         headlineFormula: '必要静圧 = 上流側 + 下流側',
         steps: [
           {
             label: '総風量 Q_fan',
-            formula: 'Q_fan = Σ 吹出側の端末の風量',
+            formula: withAircon
+              ? 'Q_fan = Σ 吹出側の子の風量（エアコンへは熱交換器からの供給分だけ）'
+              : 'Q_fan = Σ 吹出側の端末の風量',
             substitution: '',
             result: `${fmt(qFan, 0)} m³/h`,
           },
           {
-            label: '必要静圧 ΔP_必要',
-            formula: 'ΔP_必要 = 吸込側ルートの最大 + 吹出側ルートの最大',
+            label: '上流側',
+            formula: '上流側 = 受け持つ吸込側ルートの圧損の最大',
             substitution: '',
+            result: up != null ? `${fmt(up, 1)} Pa` : '—',
+          },
+          {
+            label: '下流側',
+            formula: withAircon
+              ? '下流側 = max（受け持つ吹出側ルートの最大, 各エアコンの手前までの経路の圧損）'
+              : '下流側 = 受け持つ吹出側ルートの圧損の最大',
+            substitution: '',
+            result: down != null ? `${fmt(down, 1)} Pa` : '—',
+          },
+          {
+            label: '必要静圧 ΔP_必要',
+            formula: 'ΔP_必要 = 上流側 + 下流側',
+            substitution: up != null && down != null ? `= ${fmt(up, 1)} + ${fmt(down, 1)}` : '',
             result: `${fmt(paReq, 1)} Pa`,
           },
           {
@@ -349,7 +432,7 @@ export function explainNode(coef: DesignCoefficients, node: DuctNode, result: No
         ],
         curve: fanCurve,
         designPoint: fanDesign,
-        takeaway: '送風機は、その P–Q 特性と系統の抵抗曲線（ΔP ∝ Q²）の交点（運転点）で運転します。設定風量のときに出せる静圧が必要静圧以上なら、設定風量を確保できます（SPEC.md §7）。',
+        takeaway: '送風機の実際の運転点は、P–Q 特性と系統の抵抗曲線（ΔP ∝ Q²）の交点として推定します。設定風量のときに出せる静圧が必要静圧以上なら、設定風量を確保できるとみなします（風量の配分と抵抗が設計どおりの前提。SPEC.md §7）。',
       }
     }
   }
