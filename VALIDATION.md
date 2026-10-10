@@ -134,3 +134,4 @@ npm test                                     # 自動テスト（examples.test.t
 ```
 
 入力（`input.json`）を変えたら、`handcalc.py` を回し直してから `node examples/run.mjs` を実行してください。
+CI は手計算を回し直し、保存してある `expected.json` と `examples/same_numbers.py` で比べます（数は相対 1e-12 まで同じとみなす。対数や累乗は OS の数学ライブラリで最後の 1 桁が違うことがあるため）。

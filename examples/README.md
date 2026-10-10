@@ -18,4 +18,5 @@
 ```bash
 npm run build && node examples/run.mjs     # 突き合わせ
 python3 examples/01-single-fan/handcalc.py # 手計算を回し直す
+python3 examples/same_numbers.py 保存した.json 回し直した.json  # 2 つの期待値を比べる（数は相対 1e-12 まで）
 ```

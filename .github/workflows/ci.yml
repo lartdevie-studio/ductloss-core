@@ -24,9 +24,12 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: node examples/run.mjs
+      # 数は相対 1e-12 まで同じとみなす（対数や累乗は OS の数学ライブラリで最後の 1 桁が違うことがあり、
+      # 文字どおりに比べると macOS で作った期待値が Linux で食い違う）。鍵・文字・並びは完全に同じであること
       - name: 手計算を回し直して、保存してある期待値と同じか
         run: |
-          python3 examples/01-single-fan/handcalc.py > /dev/null
-          python3 examples/02-hex-aircon/handcalc.py > /dev/null
-          python3 examples/03-roughness-bend-zeta/handcalc.py > /dev/null
-          git diff --exit-code -- examples
+          for d in examples/0*/; do
+            cp "${d}expected.json" "${d}expected.saved.json"
+            python3 "${d}handcalc.py" > /dev/null
+            python3 examples/same_numbers.py "${d}expected.saved.json" "${d}expected.json"
+          done
