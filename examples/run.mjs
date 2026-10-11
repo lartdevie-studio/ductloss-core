@@ -113,6 +113,34 @@ function memberRows(name, exp, calc) {
   check(name, '運転点 Q', exp.fan.operatingPoints[0].q, v.operating.q)
 }
 
+// ── 例 4（曲がりの ζ を径ごとに持つ形・角度の比例・器材の ζ）──
+{
+  const name = '04'
+  const inp = load('./04-bend-zeta-by-diameter/input.json')
+  const exp = load('./04-bend-zeta-by-diameter/expected.json')
+  const dl = createDuctLoss(inp.coefficients)
+  const sys = inp.payload.systems[0]
+  const calc = dl.calcSystem(sys, inp.payload.rho, 1, { tempC: inp.tempC })
+  for (const [id, m] of Object.entries(exp.members)) {
+    const r = calc.byNode[id]
+    check(name, `${id} 動圧 q`, m.q, r.q)
+    check(name, `${id} 圧損 ΔP`, m.dP, r.lossPa)
+    if (m.lambda != null) {
+      check(name, `${id} λ`, m.lambda, r.duct.lambda)
+      check(name, `${id} 曲がりの ζ`, m.bendZeta, r.duct.bendZeta)
+      check(name, `${id} 直管の圧損`, m.frictionPa, r.duct.frictionPa)
+      check(name, `${id} 曲がりの圧損`, m.bendPa, r.duct.bendPa)
+    }
+  }
+  for (const [leaf, pa] of Object.entries(exp.routes)) check(name, `ルート ${leaf}`, pa, calc.routes.find(rt => rt.terminalId === leaf).totalPa)
+  check(name, '必要静圧', exp.fan.requiredPa, calc.fanRequiredPa)
+  const v = collectMovers(inp.payload.systems, { [sys.id]: calc })[0].verdict
+  check(name, '出せる静圧', exp.fan.availableAtDesignPa, v.availableStaticPa)
+  check(name, '運転点 Q', exp.fan.operatingPoints[0].q, v.operating.q)
+  check(name, '運転点 P', exp.fan.operatingPoints[0].p, v.operating.p)
+  rows.push({ example: name, item: `送風機の判定 ${exp.fan.level} / ${v.level}`, ok: exp.fan.level === v.level })
+}
+
 const f = v => (typeof v === 'number' ? v.toFixed(6) : '')
 console.log('例  項目                              手計算          本体            差')
 for (const r of rows) {

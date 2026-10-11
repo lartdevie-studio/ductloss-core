@@ -14,7 +14,7 @@
 // 計算一式（係数を結び付ける入口）
 export { createDuctLoss, type DuctLossEngine } from './engine'
 export {
-  validateCoefficients, coefficientFingerprint, bendAngleFactor, bendZeta,
+  validateCoefficients, coefficientFingerprint, bendAngleFactor, bendZeta, bendShapeZeta90,
   type DesignCoefficients, type FrictionModel, type BendModel, type DuctMaterial, type BendShape,
 } from './coefficients'
 export { ENGINE_VERSION } from './version'

@@ -31,7 +31,7 @@ describe('係数の識別', () => {
     const base = coefficientFingerprint(TEST_COEFFICIENTS)
     const variants: DesignCoefficients[] = [
       { ...TEST_COEFFICIENTS, lambda: 0.041 },
-      { ...TEST_COEFFICIENTS, bendEquivLength90M: { ...TEST_COEFFICIENTS.bendEquivLength90M, 100: 0.31 } },
+      { ...TEST_COEFFICIENTS, bendEquivLength90M: { ...TEST_COEFFICIENTS.bendEquivLength90M, 100: 0.333 } },
       { ...TEST_COEFFICIENTS, zeta: { ...TEST_COEFFICIENTS.zeta, branch: 1.01 } },
       { ...TEST_COEFFICIENTS, terminalPa: 7 },
     ]

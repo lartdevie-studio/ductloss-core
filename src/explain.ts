@@ -1,6 +1,6 @@
 import type { DuctNode, NodeResult, SecondaryMover } from './types'
 import { effectiveDiameterMm, reducerDiameters, REDUCER_ZETA_BASIS_LABELS } from './tree'
-import type { DesignCoefficients } from './coefficients'
+import { bendZeta, type DesignCoefficients } from './coefficients'
 import { ductBends, bendEquivLength } from './calculator'
 
 // ─────────────────────────────────────────────────────────────
@@ -171,7 +171,13 @@ export function explainNode(coef: DesignCoefficients, node: DuctNode, result: No
             ...lambdaSteps,
             perMeter,
             { label: '直管の圧損', formula: 'ΔP直 = Pa/m × L', substitution: `= ${fmt(result.dpPerMeter, 2)} × ${fmt(p.lengthM, 2)}`, result: `${fmt(det.frictionPa, 2)} Pa` },
-            { label: '曲がりの ζ', formula: 'Σζ曲 = Σ ζ90 × 角度の補正 × 個数', substitution: bendText, result: `${fmt(det.bendZeta, 3)}` },
+            {
+              label: '曲がりの ζ',
+              formula: 'Σζ曲 = Σ ζ90 × 角度の補正 × 個数（器材の ζ はそのまま × 個数）',
+              substitution: bends.length === 0 ? '曲がりなし'
+                : `= ${bends.map(b => `${fmt(bendZeta(coef, b, p.diameterMm), 3)} × ${b.count}`).join(' ＋ ')}（${bendText}）`,
+              result: `${fmt(det.bendZeta, 3)}`,
+            },
             { label: '曲がりの圧損', formula: 'ΔP曲 = Σζ曲·q', substitution: `= ${fmt(det.bendZeta, 3)} × ${fmt(qd, 2)}`, result: `${fmt(det.bendPa, 2)} Pa` },
             { label: '圧損 ΔP', formula: 'ΔP = ΔP直 ＋ ΔP曲', substitution: `= ${fmt(det.frictionPa, 2)} + ${fmt(det.bendPa, 2)}`, result: `${fmt(lossPa, 2)} Pa` },
           ],

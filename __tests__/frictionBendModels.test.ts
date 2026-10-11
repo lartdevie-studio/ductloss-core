@@ -30,6 +30,9 @@ describe('Colebrook の式と空気の動粘性係数', () => {
   })
 })
 
+/** 0.2.0 の版で計算した ZETA_COEF の識別（下で書き方が変わっていないことを見張る） */
+const ZETA_COEF_FINGERPRINT_020 = 'cf1-f202bcd5791ac94b'
+
 const ZETA_COEF: DesignCoefficients = {
   ...TEST_COEFFICIENTS,
   name: '粗さと曲がり ζ（架空）',
@@ -71,9 +74,74 @@ describe('曲がりの ζ', () => {
     expect(bendAngleFactor(TEST_COEFFICIENTS, 45)).toBe(0.5)
   })
   it('器材の ζ は角度の補正をかけずにそのまま、形が無ければ既定の形', () => {
-    expect(bendZeta(ZETA_COEF, { angleDeg: 30, zeta: 0.9 })).toBe(0.9)
-    expect(bendZeta(ZETA_COEF, { angleDeg: 90, shape: 's2' })).toBeCloseTo(0.2, 12)
-    expect(bendZeta(ZETA_COEF, { angleDeg: 30, shape: 'unknown' })).toBeCloseTo(0.15, 12)
+    expect(bendZeta(ZETA_COEF, { angleDeg: 30, zeta: 0.9 }, 100)).toBe(0.9)
+    expect(bendZeta(ZETA_COEF, { angleDeg: 90, shape: 's2' }, 100)).toBeCloseTo(0.2, 12)
+    expect(bendZeta(ZETA_COEF, { angleDeg: 30, shape: 'unknown' }, 100)).toBeCloseTo(0.15, 12)
+  })
+})
+
+// 径ごとの ζ を持つ形（0.3.0）。値は架空
+const BY_D_COEF: DesignCoefficients = {
+  ...ZETA_COEF,
+  bend: { model: 'zeta', defaultShape: 's1', shapes: {
+    s1: { label: '形 1（架空）', zeta90: 0.3, source: '架空' },
+    g: { label: '径ごとの形（架空）', zeta90ByDiameter: { 100: 0.8, 150: 0.6, 200: 0.4 }, angleProportional: true, source: '架空' },
+  }, angleFactor: { 30: 0.5, 90: 1.0 }, angleFactorSource: '架空' },
+}
+
+describe('径ごとの ζ を持つ形と、角度の比例（0.3.0）', () => {
+  it('ダクトの径に一番近い径の値。同じ近さなら小さい径、表の外は端の径', () => {
+    expect(bendZeta(BY_D_COEF, { angleDeg: 90, shape: 'g' }, 100)).toBeCloseTo(0.8, 12)
+    expect(bendZeta(BY_D_COEF, { angleDeg: 90, shape: 'g' }, 125)).toBeCloseTo(0.8, 12)   // 100 と 150 の真ん中 → 小さい径
+    expect(bendZeta(BY_D_COEF, { angleDeg: 90, shape: 'g' }, 140)).toBeCloseTo(0.6, 12)
+    expect(bendZeta(BY_D_COEF, { angleDeg: 90, shape: 'g' }, 75)).toBeCloseTo(0.8, 12)
+    expect(bendZeta(BY_D_COEF, { angleDeg: 90, shape: 'g' }, 250)).toBeCloseTo(0.4, 12)
+  })
+  it('角度の比例を指定した形は θ/90（係数の角度の表を使わない）。指定の無い形は表のまま', () => {
+    expect(bendZeta(BY_D_COEF, { angleDeg: 45, shape: 'g' }, 150)).toBeCloseTo(0.3, 12)       // 0.6 × 45/90
+    expect(bendZeta(BY_D_COEF, { angleDeg: 30, shape: 'g' }, 150)).toBeCloseTo(0.2, 12)       // 表なら 0.5 倍で 0.3
+    expect(bendZeta(BY_D_COEF, { angleDeg: 30, shape: 's1' }, 150)).toBeCloseTo(0.15, 12)     // 0.3 × 表の 0.5
+    expect(bendAngleFactor(BY_D_COEF, 30, (BY_D_COEF.bend as Extract<DesignCoefficients['bend'], { model: 'zeta' }>).shapes.g)).toBeCloseTo(1 / 3, 12)
+  })
+  it('器材の ζ は径ごとの形より優先', () => {
+    expect(bendZeta(BY_D_COEF, { angleDeg: 90, shape: 'g', zeta: 1.5 }, 100)).toBe(1.5)
+  })
+  it('係数の確かめ: zeta90 と zeta90ByDiameter はどちらか一方、表は空にしない・径は正・値は 0 以上', () => {
+    expect(validateCoefficients(BY_D_COEF)).toEqual([])
+    const bm = BY_D_COEF.bend as Extract<DesignCoefficients['bend'], { model: 'zeta' }>
+    const withShape = (g: object) => ({ ...BY_D_COEF, bend: { ...bm, shapes: { ...bm.shapes, g: { label: 'g', source: '架空', ...g } } } }) as DesignCoefficients
+    expect(validateCoefficients(withShape({ zeta90: 0.5, zeta90ByDiameter: { 100: 0.5 } })).length).toBeGreaterThan(0)
+    expect(validateCoefficients(withShape({})).length).toBeGreaterThan(0)
+    expect(validateCoefficients(withShape({ zeta90ByDiameter: {} })).length).toBeGreaterThan(0)
+    expect(validateCoefficients(withShape({ zeta90ByDiameter: { 0: 0.5 } })).length).toBeGreaterThan(0)
+    expect(validateCoefficients(withShape({ zeta90ByDiameter: { 100: -0.1 } })).length).toBeGreaterThan(0)
+  })
+  it('識別: 全部の径で同じ ζ の形だけの係数は 0.2.0 と同じ識別。径ごとの値・角度の比例は値が 1 つ違っても変わる', () => {
+    // 0.2.0 で出した ZETA_COEF の識別（書き方を変えていないことの見張り）
+    expect(coefficientFingerprint(ZETA_COEF)).toBe(ZETA_COEF_FINGERPRINT_020)
+    const fp = coefficientFingerprint(BY_D_COEF)
+    const bm = BY_D_COEF.bend as Extract<DesignCoefficients['bend'], { model: 'zeta' }>
+    const g = bm.shapes.g
+    const with_ = (sh: object) => coefficientFingerprint({ ...BY_D_COEF, bend: { ...bm, shapes: { ...bm.shapes, g: { ...g, ...sh } } } } as DesignCoefficients)
+    expect(with_({ zeta90ByDiameter: { 100: 0.8, 150: 0.61, 200: 0.4 } })).not.toBe(fp)
+    expect(with_({ angleProportional: false })).not.toBe(fp)
+    expect(with_({ zeta90ByDiameter: { 200: 0.4, 100: 0.8, 150: 0.6 } })).toBe(fp)   // 書いた順は関係ない
+  })
+  it('計算書の曲がりの行に、径ごとの ζ と角度の扱いが出る', () => {
+    const dl = createDuctLoss(BY_D_COEF)
+    const n: Record<string, DuctNode> = {
+      fan: { id: 'fan', x: 0, y: 0, label: '', parentId: null, childIds: ['d'], side: 'downstream', params: dl.defaultParams('fan') },
+      d: { id: 'd', x: 0, y: 0, label: '', parentId: 'fan', childIds: ['t'], side: 'downstream',
+        params: { kind: 'duct', diameterMm: 150, lengthM: 2, bendAngleDeg: 90, bendCount: 0, lambda: null, bends: [{ angleDeg: 45, count: 2, shape: 'g' }] } as NodeParams },
+      t: { id: 't', x: 0, y: 0, label: '', parentId: 'd', childIds: [], side: 'downstream',
+        params: { kind: 'terminal', diameterMm: 150, targetFlowQh: 100, pressureMode: 'zeta', zeta: 1, targetPa: 0 } },
+    }
+    const s2: DuctSystem = { id: 's2', name: 's2', type: 'SA', rootId: 'fan', nodes: n }
+    expect(dl.calcSystem(s2, 1.2).byNode.d.duct!.bendZeta).toBeCloseTo(0.6, 12)   // 0.6 × 45/90 × 2
+    const row = dl.collectCalcConditions({ schemaVersion: 4, rho: 1.2, systems: [s2] }).find(r => r.label === '曲がり（局部損失）')!
+    expect(row.value).toContain('φ100 0.8・φ150 0.6・φ200 0.4')
+    expect(row.value).toContain('角度は θ/90')
+    expect(row.note).toContain('一番近い径')
   })
 })
 

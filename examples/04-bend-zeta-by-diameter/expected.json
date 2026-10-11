@@ -1,0 +1,237 @@
+{
+  "members": {
+    "oa": {
+      "Q": 200.0,
+      "D": 150,
+      "v": 3.143801345025093,
+      "q": 5.930092138188949,
+      "lambda": 0.02,
+      "lambdaFrom": "ダクトの λ",
+      "frictionPa": 1.581357903517053,
+      "bendZeta": 0.5,
+      "bendPa": 2.9650460690944747,
+      "dP": 4.546403972611528,
+      "bends": [
+        {
+          "angleDeg": 90,
+          "count": 1,
+          "shapeUsed": "elbow",
+          "from": "形の zeta90",
+          "tableDiameterMm": null,
+          "zeta90": 0.3,
+          "angleFactor": 1.0,
+          "angleRule": "角度の表の値",
+          "zetaOne": 0.3
+        },
+        {
+          "angleDeg": 30,
+          "count": 1,
+          "shapeUsed": "tube",
+          "from": "形の zeta90ByDiameter",
+          "tableDiameterMm": 150,
+          "zeta90": 0.6,
+          "angleFactor": 0.3333333333333333,
+          "angleRule": "θ/90（角度に比例させる形。角度の表は使わない）",
+          "zetaOne": 0.19999999999999998
+        }
+      ]
+    },
+    "hood": {
+      "Q": 200.0,
+      "D": 150,
+      "v": 3.143801345025093,
+      "q": 5.930092138188949,
+      "zeta": 2.0,
+      "dP": 11.860184276377899
+    },
+    "main": {
+      "Q": 200.0,
+      "D": 150,
+      "v": 3.143801345025093,
+      "q": 5.930092138188949,
+      "lambda": 0.025,
+      "lambdaFrom": "送風機の既定値",
+      "frictionPa": 5.93009213818895,
+      "bendZeta": 0.82,
+      "bendPa": 4.862675553314938,
+      "dP": 10.792767691503888,
+      "bends": [
+        {
+          "angleDeg": 45,
+          "count": 2,
+          "shapeUsed": "tube",
+          "from": "形の zeta90ByDiameter",
+          "tableDiameterMm": 150,
+          "zeta90": 0.6,
+          "angleFactor": 0.5,
+          "angleRule": "θ/90（角度に比例させる形。角度の表は使わない）",
+          "zetaOne": 0.3
+        },
+        {
+          "angleDeg": 60,
+          "count": 1,
+          "shapeUsed": "elbow",
+          "from": "形の zeta90",
+          "tableDiameterMm": null,
+          "zeta90": 0.3,
+          "angleFactor": 0.7333333333333333,
+          "angleRule": "角度の表を補間（45°〜90°）",
+          "zetaOne": 0.21999999999999997
+        }
+      ]
+    },
+    "br": {
+      "Q": 200.0,
+      "D": 150,
+      "v": 3.143801345025093,
+      "q": 5.930092138188949,
+      "zeta": 1.0,
+      "dP": 5.930092138188949
+    },
+    "dA": {
+      "Q": 100.0,
+      "D": 125,
+      "v": 2.263536968418067,
+      "q": 3.0741597644371517,
+      "lambda": 0.025,
+      "lambdaFrom": "送風機の既定値",
+      "frictionPa": 3.074159764437152,
+      "bendZeta": 0.9333333333333333,
+      "bendPa": 2.869215780141342,
+      "dP": 5.943375544578494,
+      "bends": [
+        {
+          "angleDeg": 30,
+          "count": 2,
+          "shapeUsed": "tube",
+          "from": "形の zeta90ByDiameter",
+          "tableDiameterMm": 100,
+          "zeta90": 0.8,
+          "angleFactor": 0.3333333333333333,
+          "angleRule": "θ/90（角度に比例させる形。角度の表は使わない）",
+          "zetaOne": 0.26666666666666666
+        },
+        {
+          "angleDeg": 45,
+          "count": 1,
+          "shapeUsed": "tube",
+          "from": "形の zeta90ByDiameter",
+          "tableDiameterMm": 100,
+          "zeta90": 0.8,
+          "angleFactor": 0.5,
+          "angleRule": "θ/90（角度に比例させる形。角度の表は使わない）",
+          "zetaOne": 0.4
+        }
+      ]
+    },
+    "tA": {
+      "Q": 100.0,
+      "D": 125,
+      "v": 2.263536968418067,
+      "q": 3.0741597644371517,
+      "zeta": 1.5,
+      "dP": 4.6112396466557275
+    },
+    "dB": {
+      "Q": 70.0,
+      "D": 100,
+      "v": 2.4757435592072605,
+      "q": 3.6775837025737403,
+      "lambda": 0.025,
+      "lambdaFrom": "送風機の既定値",
+      "frictionPa": 3.6775837025737403,
+      "bendZeta": 1.7999999999999998,
+      "bendPa": 6.619650664632732,
+      "dP": 10.297234367206473,
+      "bends": [
+        {
+          "angleDeg": 45,
+          "count": 1,
+          "shapeUsed": "tube",
+          "from": "形の zeta90ByDiameter",
+          "tableDiameterMm": 100,
+          "zeta90": 0.8,
+          "angleFactor": 0.5,
+          "angleRule": "θ/90（角度に比例させる形。角度の表は使わない）",
+          "zetaOne": 0.4
+        },
+        {
+          "angleDeg": 30,
+          "count": 2,
+          "shapeUsed": null,
+          "from": "器材の ζ",
+          "tableDiameterMm": null,
+          "zeta90": null,
+          "angleFactor": null,
+          "angleRule": null,
+          "zetaOne": 0.7
+        }
+      ]
+    },
+    "tB": {
+      "Q": 70.0,
+      "D": 100,
+      "v": 2.4757435592072605,
+      "q": 3.6775837025737403,
+      "zeta": 1.5,
+      "dP": 5.516375553860611
+    },
+    "dC": {
+      "Q": 30.0,
+      "D": 75,
+      "v": 1.8862808070150558,
+      "q": 2.134833169748022,
+      "lambda": 0.025,
+      "lambdaFrom": "送風機の既定値",
+      "frictionPa": 2.134833169748022,
+      "bendZeta": 0.8,
+      "bendPa": 1.7078665357984175,
+      "dP": 3.8426997055464396,
+      "bends": [
+        {
+          "angleDeg": 90,
+          "count": 1,
+          "shapeUsed": "tube",
+          "from": "形の zeta90ByDiameter",
+          "tableDiameterMm": 100,
+          "zeta90": 0.8,
+          "angleFactor": 1.0,
+          "angleRule": "θ/90（角度に比例させる形。角度の表は使わない）",
+          "zetaOne": 0.8
+        }
+      ]
+    },
+    "tC": {
+      "Q": 30.0,
+      "D": 75,
+      "v": 1.8862808070150558,
+      "q": 2.134833169748022,
+      "zeta": 1.5,
+      "dP": 3.2022497546220325
+    }
+  },
+  "routes": {
+    "tA": 27.277475020927056,
+    "tB": 32.53646975075992,
+    "tC": 23.76780928986131,
+    "hood": 16.406588248989426
+  },
+  "fan": {
+    "flowQh": 200.0,
+    "upstreamPa": 16.406588248989426,
+    "downstreamPa": 32.53646975075992,
+    "requiredPa": 48.94305799974934,
+    "critical": "tB",
+    "densityRatio": 1.0,
+    "k": 0.0012235764499937336,
+    "availableAtDesignPa": 65.0,
+    "marginPa": 16.056942000250658,
+    "level": "ok",
+    "operatingPoints": [
+      {
+        "q": 215.91523146757118,
+        "p": 57.04238426621441
+      }
+    ]
+  }
+}

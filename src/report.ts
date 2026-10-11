@@ -284,13 +284,23 @@ export function collectCalcConditions(coef: DesignCoefficients, payload: DuctLos
       }
     }
     if (used.size > 0 || catalogZeta) {
-      const shapes = [...used].map(k => `${bm.shapes[k].label} ζ90 ${formatCoefficient(bm.shapes[k].zeta90)}`)
+      // 径ごとの ζ を持つ形は、表の全部の径を載せる（どの径の値を使ったかは計算根拠の行で追える）
+      const zetaText = (k: string) => {
+        const sh = bm.shapes[k]
+        const z = sh.zeta90ByDiameter
+          ? Object.entries(sh.zeta90ByDiameter).map(([d, v]) => [Number(d), v] as const).sort((a, b) => a[0] - b[0])
+              .map(([d, v]) => `φ${d} ${formatCoefficient(v)}`).join('・')
+          : formatCoefficient(sh.zeta90 ?? 0)
+        return `${sh.label} ζ90 ${z}${sh.angleProportional ? '（角度は θ/90）' : ''}`
+      }
+      const shapes = [...used].map(zetaText)
       if (catalogZeta) shapes.push('器材の ζ（部材ごと）')
       const angles = Object.entries(bm.angleFactor ?? {}).map(([a, f]) => `${a}° ${formatCoefficient(f)}`).join('・')
+      const byDiameter = [...used].some(k => bm.shapes[k].zeta90ByDiameter)
       rows.push({
         label: '曲がり（局部損失）',
         value: shapes.join(' ／ '),
-        note: `ζ90 × 角度の補正（${angles || 'θ/90'}）× 個数 × 動圧。λ によらない。出典: ${[...new Set([...used].map(k => bm.shapes[k].source))].join('／')}${bm.angleFactorSource ? `／角度: ${bm.angleFactorSource}` : ''}`,
+        note: `ζ90 × 角度の補正（${angles || 'θ/90'}）× 個数 × 動圧。λ によらない。${byDiameter ? '径ごとの ζ はダクトの径に一番近い径の値。' : ''}出典: ${[...new Set([...used].map(k => bm.shapes[k].source))].join('／')}${bm.angleFactorSource ? `／角度: ${bm.angleFactorSource}` : ''}`,
       })
     }
   }

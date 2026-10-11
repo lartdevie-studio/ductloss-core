@@ -77,11 +77,24 @@ export type BendModel =
       angleFactorSource?: string
     }
 
-/** 曲がりの形（ζ で持つとき） */
+/**
+ * 曲がりの形（ζ で持つとき）。90° 1 個の ζ は、全部の径で同じ値（zeta90）か、径ごとの値（zeta90ByDiameter）の
+ * どちらか一方で持つ（0.3.0〜。製品の資料では、同じ曲げ方でも径で ζ が大きく変わることがあるため）
+ */
 export interface BendShape {
   label: string
-  /** 90° 1 個の局部抵抗係数（そのダクトの動圧に対する値） */
-  zeta90: number
+  /** 90° 1 個の局部抵抗係数（そのダクトの動圧に対する値）。全部の径で同じ値 */
+  zeta90?: number
+  /**
+   * 径 (mm) → 90° 1 個の局部抵抗係数。ダクトの径に一番近い径の値を使う
+   * （同じ近さなら小さい径。相当長の表 bendEquivLength90M と同じ決まり）
+   */
+  zeta90ByDiameter?: Readonly<Record<number, number>>
+  /**
+   * true なら、この形の角度の補正は θ/90（係数の angleFactor の表より優先）。
+   * 製品の資料が「θ° の曲がりは 90° の値 × θ/90」と決めているときに使う
+   */
+  angleProportional?: boolean
   source: string
 }
 
@@ -111,7 +124,18 @@ export function validateCoefficients(c: DesignCoefficients): string[] {
     if (shapes.length === 0) errors.push('bend.shapes（曲がりの形）が空です')
     if (!c.bend.shapes?.[c.bend.defaultShape]) errors.push(`bend.defaultShape「${c.bend.defaultShape}」が shapes にありません`)
     for (const [k, sh] of shapes) {
-      nonNeg(sh.zeta90, `bend.shapes.${k}.zeta90`)
+      const byD = sh.zeta90ByDiameter === undefined ? undefined : Object.entries(sh.zeta90ByDiameter)
+      if ((sh.zeta90 === undefined) === (byD === undefined)) {
+        errors.push(`bend.shapes.${k} は zeta90 か zeta90ByDiameter のどちらか一方を書いてください`)
+      } else if (byD === undefined) {
+        nonNeg(sh.zeta90 as number, `bend.shapes.${k}.zeta90`)
+      } else {
+        if (byD.length === 0) errors.push(`bend.shapes.${k}.zeta90ByDiameter が空です`)
+        for (const [d, z] of byD) {
+          if (!(Number(d) > 0)) errors.push(`bend.shapes.${k}.zeta90ByDiameter の径 ${d} は正の数にしてください`)
+          nonNeg(z, `bend.shapes.${k}.zeta90ByDiameter[${d}]`)
+        }
+      }
       if (!sh.source?.trim()) errors.push(`bend.shapes.${k} の出典が空です`)
     }
     for (const [a, f] of Object.entries(c.bend.angleFactor ?? {})) {
@@ -130,16 +154,30 @@ export function validateCoefficients(c: DesignCoefficients): string[] {
 }
 
 /**
- * 90° 曲がり 1 個の相当長 (m)。表の中で一番近い径の値を使う。
- * 同じ近さの径が 2 つあるときは小さい径（表を径の小さい順に見て、先に見つかった方）。
+ * 径の表から、一番近い径の値を読む。同じ近さの径が 2 つあるときは小さい径
+ * （表を径の小さい順に見て、先に見つかった方）。表が空なら 0
  */
-export function bendEquivLength90(coef: DesignCoefficients, diameterMm: number): number {
-  const diameters = Object.keys(coef.bendEquivLength90M).map(Number).sort((a, b) => a - b)
+function nearestDiameterValue(table: Readonly<Record<number, number>>, diameterMm: number): number {
+  const diameters = Object.keys(table).map(Number).sort((a, b) => a - b)
   if (diameters.length === 0) return 0
   const d = diameters.reduce((prev, curr) =>
     Math.abs(curr - diameterMm) < Math.abs(prev - diameterMm) ? curr : prev,
   )
-  return coef.bendEquivLength90M[d]
+  return table[d]
+}
+
+/**
+ * 90° 曲がり 1 個の相当長 (m)。表の中で一番近い径の値を使う。
+ * 同じ近さの径が 2 つあるときは小さい径（表を径の小さい順に見て、先に見つかった方）。
+ */
+export function bendEquivLength90(coef: DesignCoefficients, diameterMm: number): number {
+  return nearestDiameterValue(coef.bendEquivLength90M, diameterMm)
+}
+
+/** 曲がりの形の、90° 1 個の ζ。径ごとの値を持つ形は、一番近い径の値（同じ近さなら小さい径） */
+export function bendShapeZeta90(shape: BendShape, diameterMm: number): number {
+  if (shape.zeta90ByDiameter) return nearestDiameterValue(shape.zeta90ByDiameter, diameterMm)
+  return shape.zeta90 ?? 0
 }
 
 /**
@@ -170,8 +208,15 @@ export function coefficientFingerprint(c: DesignCoefficients): string {
     parts.push(`friction=roughness;${mats};default=${c.friction.defaultMaterial}`)
   }
   if (c.bend?.model === 'zeta') {
+    // 全部の径で同じ ζ の形は 0.2.0 と同じ書き方（その係数の識別を変えない）。径ごとの値・角度の比例は、あるときだけ足す
+    const shapeText = (sh: BendShape) => {
+      const base = sh.zeta90ByDiameter
+        ? `d[${Object.entries(sh.zeta90ByDiameter).map(([d, z]) => [Number(d), z] as const).sort((a, b) => a[0] - b[0]).map(([d, z]) => `${num(d)}=${num(z)}`).join(',')}]`
+        : num(sh.zeta90 as number)
+      return sh.angleProportional ? `${base};p` : base
+    }
     const shapes = Object.entries(c.bend.shapes).sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([k, sh]) => `${k}:${num(sh.zeta90)}`).join(',')
+      .map(([k, sh]) => `${k}:${shapeText(sh)}`).join(',')
     const angles = Object.entries(c.bend.angleFactor ?? {}).map(([a, f]) => [Number(a), f] as const)
       .sort((a, b) => a[0] - b[0]).map(([a, f]) => `${num(a)}:${num(f)}`).join(',')
     parts.push(`bend=zeta;${shapes};default=${c.bend.defaultShape};angle=${angles}`)
@@ -191,9 +236,11 @@ function fnv1a32(text: string, seed: number): string {
 }
 
 /**
- * 曲がりの角度の補正（90° を 1）。係数に表があれば表の角度の間を直線で補間（表の外は端の値）、無ければ θ/90。
+ * 曲がりの角度の補正（90° を 1）。形が角度の比例（angleProportional）を指定していれば θ/90。
+ * そうでなければ、係数に表があれば表の角度の間を直線で補間（表の外は端の値）、無ければ θ/90。
  */
-export function bendAngleFactor(coef: DesignCoefficients, angleDeg: number): number {
+export function bendAngleFactor(coef: DesignCoefficients, angleDeg: number, shape?: BendShape): number {
+  if (shape?.angleProportional) return angleDeg / 90
   const table = coef.bend?.model === 'zeta' ? coef.bend.angleFactor : undefined
   const pts = Object.entries(table ?? {}).map(([a, f]) => [Number(a), f] as const).sort((a, b) => a[0] - b[0])
   if (pts.length === 0) return angleDeg / 90
@@ -208,11 +255,16 @@ export function bendAngleFactor(coef: DesignCoefficients, angleDeg: number): num
 
 /**
  * 曲がり 1 個の ζ（ζ で持つ係数のとき）。器材の ζ があればそれ（その角度での値なので補正しない）、
- * 無ければ形の ζ90 × 角度の補正。形が係数に無ければ既定の形
+ * 無ければ形の ζ90（径ごとの値を持つ形は diameterMm に一番近い径の値）× 角度の補正。形が係数に無ければ既定の形
  */
-export function bendZeta(coef: DesignCoefficients, bend: { angleDeg: number; shape?: string | null; zeta?: number | null }): number {
+export function bendZeta(
+  coef: DesignCoefficients,
+  bend: { angleDeg: number; shape?: string | null; zeta?: number | null },
+  diameterMm: number,
+): number {
   if (coef.bend?.model !== 'zeta') return 0
   if (typeof bend.zeta === 'number' && Number.isFinite(bend.zeta) && bend.zeta >= 0) return bend.zeta
   const shape = (bend.shape && coef.bend.shapes[bend.shape]) || coef.bend.shapes[coef.bend.defaultShape]
-  return (shape?.zeta90 ?? 0) * bendAngleFactor(coef, bend.angleDeg)
+  if (!shape) return 0
+  return bendShapeZeta90(shape, diameterMm) * bendAngleFactor(coef, bend.angleDeg, shape)
 }

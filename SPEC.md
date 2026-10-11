@@ -3,7 +3,7 @@
 この文書は、部品が**何をどう計算するか**の正本です。コードと食い違っていたら、どちらかの誤りです。
 式・決まり事を変えたら、この文書と `__tests__/` の両方を直してください。
 
-- 版: 0.2.0（保存形式 schema v4）。版ごとの変更は `CHANGELOG.md`
+- 版: 0.3.0（保存形式 schema v4）。版ごとの変更は `CHANGELOG.md`
 - 利用条件: MIT（`LICENSE`）
 
 ---
@@ -61,8 +61,9 @@ interface DesignCoefficients {
   filterPa: number             // 新しいフィルターの既定の差圧(Pa)
   // 以下は任意（0.2.0）。渡さなければ今までどおり（λ 一定・曲がりは相当長）
   friction?: { model: 'roughness'; materials: Record<鍵, { label; roughnessMm; source }>; defaultMaterial: 鍵 }
-  bend?: { model: 'zeta'; shapes: Record<鍵, { label; zeta90; source }>; defaultShape: 鍵;
+  bend?: { model: 'zeta'; shapes: Record<鍵, 曲がりの形>; defaultShape: 鍵;
            angleFactor?: Record<角度, 補正>; angleFactorSource?: string }
+  // 曲がりの形 = { label; source; zeta90 か zeta90ByDiameter のどちらか一方; angleProportional? }（径ごとの値・角度の比例は 0.3.0）
   notes?: string[]             // 計算書に出す、係数の組についての注意
 }
 ```
@@ -151,9 +152,16 @@ L90(D) = 係数の表で、D に一番近い径の値（同じ近さなら小さ
 ```
 ΔP曲 = Σ ζ1個 × 個数 × q          （直管の損失 λ·(L/D)·q とは別に足す。λ によらない）
 ζ1個 = 曲がりの zeta（器材の ζ。その角度での値なので補正しない）
-       無ければ 形の zeta90 × 角度の補正（形はダクトの曲がりの shape。無ければ defaultShape）
-角度の補正 = angleFactor の表を直線で補間（表の外は端の値）。表が無ければ θ/90
+       無ければ 形の ζ90 × 角度の補正（形はダクトの曲がりの shape。無ければ defaultShape）
+形の ζ90 = zeta90（全部の径で同じ値）
+         または zeta90ByDiameter の、ダクトの径に一番近い径の値（同じ近さなら小さい径。相当長の表と同じ決まり）
+角度の補正 = 形が angleProportional なら θ/90
+           そうでなければ angleFactor の表を直線で補間（表の外は端の値）。表が無ければ θ/90
 ```
+
+`zeta90ByDiameter` は、製品の資料で同じ曲げ方でも径で ζ が大きく変わるとき（曲げ半径が径で決まる管など）に使います。
+`angleProportional` は、製品の資料が「θ° の曲がりは 90° の値 × θ/90」と決めているときに、係数の角度の表より優先させます。
+形は `zeta90` と `zeta90ByDiameter` のどちらか一方だけを持ちます（両方・どちらも無い・空の表・正でない径・負の値は `validateCoefficients` が止めます）。
 
 このとき直管の長さ L は、曲がりを含む中心線の長さとします（ζ は向きを変える損失だけ）。相当長の表は使いません。
 使った ζ の合計・曲がりの圧損・直管の摩擦の圧損は `NodeResult.duct`（`bendZeta`・`bendPa`・`frictionPa`・`bendModel`）に入ります。

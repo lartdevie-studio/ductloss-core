@@ -114,7 +114,7 @@ export function calcNodeResult(
       const dpPerMeter = frictionPerMeter(effectiveLambda, diameterMm, q)
       if (coef.bend?.model === 'zeta') {
         // 曲がりは λ によらない局部損失（ζ90 × 角度の補正 × 個数 × q）。直管の長さ L は曲がりを含む中心線の長さとする
-        const bendZetaSum = ductBends(node.params).reduce((s, b) => s + bendZeta(coef, b) * b.count, 0)
+        const bendZetaSum = ductBends(node.params).reduce((s, b) => s + bendZeta(coef, b, diameterMm) * b.count, 0)
         const frictionPa = dpPerMeter * lengthM
         const bendPa = bendZetaSum * q
         return {

@@ -1,7 +1,7 @@
 # ductloss-core — specification summary (English)
 
 This is a summary of [SPEC.md](./SPEC.md). **The Japanese SPEC.md is authoritative**; section numbers below refer to it.
-Version 0.2.0, saved-data format schema v4.
+Version 0.3.0, saved-data format schema v4.
 
 ## §0 Scope — this is a design calculation
 
@@ -46,7 +46,9 @@ the table value of the nearest diameter (the smaller one on ties). Filter, branc
 Optional models (0.2): with `friction: { model: 'roughness' }`, ducts without an explicit λ (duct or fan) get λ from the
 material roughness and Re via Colebrook (64/Re below Re 2300; ν from Sutherland's law at `tempC`, default 20 °C). With
 `bend: { model: 'zeta' }`, bends are a local loss ζ90 × angle factor × count × q independent of λ (catalogue ζ per bend
-overrides), and the duct length is the centreline length including bends. Without these fields nothing changes.
+overrides), and the duct length is the centreline length including bends. Since 0.3.0 a bend shape may give ζ90 per diameter
+(`zeta90ByDiameter`, nearest diameter, ties go to the smaller one) instead of one `zeta90`, and may set
+`angleProportional: true` to use θ/90 instead of the set's angle-factor table. Without these fields nothing changes.
 
 ## §4 Diameters and the reducer reference section
 
@@ -110,4 +112,4 @@ and absent fields keep the previous behaviour.
 ## Validation
 
 See [VALIDATION.md](./VALIDATION.md) (Japanese): independent hand calculations in Python for two examples (112 items match),
-SPEC Appendix A, boundary tests (146 items across three examples, including Colebrook and ζ bends). Not yet compared with other software or with measurements.
+SPEC Appendix A, boundary tests (195 items across four examples, including Colebrook, ζ bends and per-diameter bend ζ). Not yet compared with other software or with measurements.

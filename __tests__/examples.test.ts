@@ -127,3 +127,36 @@ describe('検算例 3: 粗さから求める λ（Colebrook）と、曲がりの
     expect(Math.abs((v.operating?.q ?? NaN) - exp.fan.operatingPoints[0].q)).toBeLessThanOrEqual(TOL)
   })
 })
+
+describe('検算例 4: 曲がりの ζ を径ごとに持つ形・角度の比例・器材の ζ（0.3.0）', () => {
+  const inp: Input & { tempC?: number } = load('04-bend-zeta-by-diameter/input.json')
+  const exp = load('04-bend-zeta-by-diameter/expected.json')
+  const dl = createDuctLoss(inp.coefficients)
+  const sys = inp.payload.systems[0]
+  const calc = dl.calcSystem(sys, inp.payload.rho, 1, { tempC: inp.tempC })
+
+  it('直管ごとの λ・曲がりの ζ・直管と曲がりの圧損と、部材の圧損', () => {
+    for (const [id, m] of Object.entries(exp.members as Record<string, Member & { lambda?: number; bendZeta?: number; frictionPa?: number; bendPa?: number }>)) {
+      const r = calc.byNode[id]
+      expect(Math.abs(r.lossPa - m.dP), `${id} ΔP`).toBeLessThanOrEqual(TOL)
+      if (m.lambda != null) {
+        expect(Math.abs((r.duct?.lambda ?? NaN) - m.lambda), `${id} λ`).toBeLessThanOrEqual(1e-12)
+        expect(Math.abs((r.duct?.bendZeta ?? NaN) - m.bendZeta!), `${id} 曲がりの ζ`).toBeLessThanOrEqual(1e-12)
+        expect(Math.abs((r.duct?.frictionPa ?? NaN) - m.frictionPa!), `${id} 直管`).toBeLessThanOrEqual(TOL)
+        expect(Math.abs((r.duct?.bendPa ?? NaN) - m.bendPa!), `${id} 曲がり`).toBeLessThanOrEqual(TOL)
+        expect(r.duct?.bendModel).toBe('zeta')
+      }
+    }
+  })
+  it('ルートと必要静圧・判定・運転点', () => {
+    for (const [leaf, pa] of Object.entries(exp.routes as Record<string, number>)) {
+      expect(Math.abs(calc.routes.find(rt => rt.terminalId === leaf)!.totalPa - pa), leaf).toBeLessThanOrEqual(TOL)
+    }
+    expect(Math.abs(calc.fanRequiredPa - exp.fan.requiredPa)).toBeLessThanOrEqual(TOL)
+    const v = collectMovers(inp.payload.systems, { [sys.id]: calc })[0].verdict
+    expect(v.level).toBe(exp.fan.level)
+    expect(Math.abs((v.availableStaticPa ?? NaN) - exp.fan.availableAtDesignPa)).toBeLessThanOrEqual(TOL)
+    expect(Math.abs((v.operating?.q ?? NaN) - exp.fan.operatingPoints[0].q)).toBeLessThanOrEqual(TOL)
+    expect(Math.abs((v.operating?.p ?? NaN) - exp.fan.operatingPoints[0].p)).toBeLessThanOrEqual(TOL)
+  })
+})

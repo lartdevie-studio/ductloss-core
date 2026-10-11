@@ -37,7 +37,7 @@
 ## 検証の状況
 
 - **自動テスト**（`npm test`）・型チェック・ビルドを、公開先の GitHub Actions で確かめています。これは**実装が仕様どおりか**の確かめで、実際の設備と一致することの証明ではありません
-- **手計算との照合**: SPEC.md 付録 A の例題、検算例 3 つ（送風機 1 台＋外気側のフィルター・フード＋2 枝／熱交換器＋エアコン／粗さからの λ と曲がりの ζ。`examples/`・Python の手計算と 146 項目が一致）、
+- **手計算との照合**: SPEC.md 付録 A の例題、検算例 4 つ（送風機 1 台＋外気側のフィルター・フード＋2 枝／熱交換器＋エアコン／粗さからの λ と曲がりの ζ／径ごとの曲がりの ζ。`examples/`・Python の手計算と 195 項目が一致）、
   レジューサの吹出・吸込 × 縮小・拡大の 4 通り、送風機の判定の境目（範囲の外・鞍部・接する点・定格 1 点）を、本体の関数を使わずに求めた値と照合しています。方法と結果は [VALIDATION.md](./VALIDATION.md)
 - **ほかのソフトとの比較**: まだです（比べるのに要る資料の一覧は VALIDATION.md §7）
 - 計算結果は `calc.meta` に計算の版と係数の識別を持ち、保存データには作ったときの係数の記録（`coefficientsStamp`）が付きます
@@ -148,7 +148,7 @@ const issues = diagnose(payload, calcBySystem)                // 点検の結果
 ```ts
 const rows = dl.collectCalcConditions(payload)
 // rows[0] = { label: '設計係数', value: '自社標準 2026', note: '出典: …' }
-// rows[1] = { label: '計算の版', value: 'ductloss-core 0.2.0', note: '係数の識別 cf1-…' }
+// rows[1] = { label: '計算の版', value: 'ductloss-core 0.3.0', note: '係数の識別 cf1-…' }
 // 保存したときと違う係数で計算すると「保存時の設計係数」の行が出る
 ```
 
