@@ -1,3 +1,4 @@
+import { usableSafetyFactor } from './verdict'
 import type { DuctNode, NodeResult, SecondaryMover } from './types'
 import { effectiveDiameterMm, reducerDiameters, REDUCER_ZETA_BASIS_LABELS } from './tree'
 import { bendZeta, type DesignCoefficients } from './coefficients'
@@ -62,8 +63,10 @@ function buildQuadraticCurve(qDesign: number, paDesign: number): CurvePoint[] {
 export interface SystemContext {
   /** ファン総風量 (m³/h) */
   fanFlowQh: number
-  /** ファンが必要とする静圧 = 系統の総圧損 (Pa) */
+  /** 損失の合計 = 系統の総圧損 (Pa)（calc.fanRequiredPa。余裕率 K を掛ける前） */
   fanRequiredPa: number
+  /** 送風機の余裕率 K（保存データの safetyFactor・0.4.0〜）。必要静圧 ＝ 損失の合計 × K。省くと 1 */
+  safetyFactor?: number | null
   /**
    * 系統の部材一式。分岐・端末・レデューサの径は接続ダクトから読むので（SPEC.md §4）、
    * 渡されれば計算と同じ径で式を書く。無ければ部材に保存された径を使う。
@@ -141,7 +144,9 @@ export function explainNode(coef: DesignCoefficients, node: DuctNode, result: No
             },
             {
               label: '摩擦係数 λ',
-              formula: `1/√λ = −2·log₁₀(ε/(3.7·D) + 2.51/(Re·√λ))（Colebrook の式）`,
+              formula: det.formula === 'moody'
+                ? 'λ = 0.0055·[1 + (20,000·ε/D + 10⁶/Re)^(1/3)]（Moody の近似式）'
+                : `1/√λ = −2·log₁₀(ε/(3.7·D) + 2.51/(Re·√λ))（Colebrook の式）`,
               substitution: `ε = ${coef.friction?.model === 'roughness' ? (coef.friction.materials[det.material ?? '']?.roughnessMm ?? '?') : '?'} mm（${coef.friction?.model === 'roughness' ? (coef.friction.materials[det.material ?? '']?.label ?? '') : ''}）`,
               result: `${fmt(lambda, 4)}`,
             },
@@ -302,6 +307,41 @@ export function explainNode(coef: DesignCoefficients, node: DuctNode, result: No
         : basis === 'flowOutlet' ? ((node.side ?? 'downstream') === 'upstream' ? fromMm : toMm)
         : toMm)
       const basisLabel = REDUCER_ZETA_BASIS_LABELS[basis]
+      // 係数の表から ζ を求めたとき（0.4.0〜）。ζ は流れの入口側の動圧に掛ける（SPEC.md §4）
+      const rt = result.reducer
+      if (rt?.zetaSource === 'table') {
+        const changeLabel = rt.change === 'expansion' ? '拡大' : '縮小'
+        const tableLabel = rt.table === 'gradual' ? `漸${changeLabel}（角度 ${fmt(rt.angleDeg ?? 0, 0)}°）` : `急${changeLabel}（段付き）`
+        return {
+          title: 'レデューサ（径変更）の圧損',
+          intro: `径変更部の局部抵抗。ζ は係数の表（${tableLabel}）から、面積比（流れの入口 ÷ 出口）で求め、`
+            + `流れの入口側の径（φ${fmt(rt.flowInletMm, 0)}）の動圧に掛けます。流れの出口側は φ${fmt(rt.flowOutletMm, 0)} です。`
+            + (rt.clamped ? '面積比・角度が表の範囲の外のため、表の端の値を使っています。' : ''),
+          headlineFormula: 'ΔP = ζ·q（q は流れの入口側の動圧）',
+          steps: [
+            ...velocityAndQSteps(rt.flowInletMm),
+            {
+              label: '面積比',
+              formula: '（入口の径 ÷ 出口の径）²',
+              substitution: `= (${fmt(rt.flowInletMm, 0)} / ${fmt(rt.flowOutletMm, 0)})²`,
+              result: `${fmt(rt.areaRatio ?? 0, 3)}`,
+            },
+            {
+              label: 'レデューサ ζ',
+              formula: `表（${tableLabel}）`,
+              substitution: rt.clamped ? '表の範囲の外（端の値）' : '表の間は直線で補間',
+              result: `${fmt(rt.zeta, 2)}`,
+            },
+            {
+              label: '圧損 ΔP',
+              formula: 'ΔP = ζ·q',
+              substitution: `= ${fmt(rt.zeta, 2)} × ${fmt(qd, 2)}`,
+              result: `${fmt(lossPa, 2)} Pa`,
+            },
+          ],
+          curve, designPoint, takeaway,
+        }
+      }
       return {
         title: 'レデューサ（径変更）の圧損',
         intro: `径変更部の局部抵抗。ζ は「${basisLabel}」の動圧を基準にした値として、その径（φ${fmt(refMm, 0)}）の動圧に掛けます。`
@@ -389,6 +429,7 @@ export function explainNode(coef: DesignCoefficients, node: DuctNode, result: No
       // 設計点（= 必要静圧点）は (fanFlowQh, fanRequiredPa)。実際の運転点は P-Q 特性との交点（SPEC.md §7）
       const qFan = sys?.fanFlowQh ?? q
       const paReq = sys?.fanRequiredPa ?? 0
+      const K = usableSafetyFactor(sys?.safetyFactor)
       const fanCurve = buildQuadraticCurve(qFan, paReq)
       const fanDesign = { q: qFan, pa: paReq }
       // エアコン（第 2 の送風機）がある系統では、主送風機の受け持ちが変わる（SPEC.md §6）。式もそれに合わせる
@@ -399,7 +440,7 @@ export function explainNode(coef: DesignCoefficients, node: DuctNode, result: No
         title: 'ファン（送風機）',
         intro: '送風機は、担当する経路の圧損に見合う静圧を出す機器です。系統の抵抗は ΔP = k·Q² で表し、設定風量と必要静圧の点（設計点）を通るとします（SPEC.md §6・§7）。'
           + (withAircon ? 'この系統にはエアコン（第 2 の送風機）があり、主送風機はエアコンの手前までを受け持ちます。2 台の圧力・風量の相互作用は解きません。' : ''),
-        headlineFormula: '必要静圧 = 上流側 + 下流側',
+        headlineFormula: K === 1 ? '必要静圧 = 上流側 + 下流側' : '必要静圧 = （上流側 + 下流側）× 余裕率 K',
         steps: [
           {
             label: '総風量 Q_fan',
@@ -423,22 +464,33 @@ export function explainNode(coef: DesignCoefficients, node: DuctNode, result: No
             substitution: '',
             result: down != null ? `${fmt(down, 1)} Pa` : '—',
           },
-          {
+          ...(K === 1 ? [{
             label: '必要静圧 ΔP_必要',
             formula: 'ΔP_必要 = 上流側 + 下流側',
             substitution: up != null && down != null ? `= ${fmt(up, 1)} + ${fmt(down, 1)}` : '',
             result: `${fmt(paReq, 1)} Pa`,
-          },
+          }] : [{
+            label: '損失の合計 ΔP_損失',
+            formula: 'ΔP_損失 = 上流側 + 下流側',
+            substitution: up != null && down != null ? `= ${fmt(up, 1)} + ${fmt(down, 1)}` : '',
+            result: `${fmt(paReq, 1)} Pa`,
+          }, {
+            label: '必要静圧 ΔP_必要',
+            formula: 'ΔP_必要 = ΔP_損失 × 余裕率 K（機器と比べる値）',
+            substitution: `= ${fmt(paReq, 1)} × ${K.toFixed(2)}`,
+            result: `${fmt(paReq * K, 1)} Pa`,
+          }]),
           {
             label: '系統抵抗係数 k',
-            formula: 'k = ΔP_必要 / Q_fan²',
+            formula: K === 1 ? 'k = ΔP_必要 / Q_fan²' : 'k = ΔP_損失 / Q_fan²（運転点は余裕率を掛けない損失で求める）',
             substitution: qFan > 0 ? `= ${fmt(paReq, 1)} / ${fmt(qFan, 0)}²` : '',
             result: qFan > 0 ? `${(paReq / (qFan * qFan)).toExponential(2)} Pa·(h/m³)²` : '—',
           },
         ],
         curve: fanCurve,
         designPoint: fanDesign,
-        takeaway: '送風機の実際の運転点は、P–Q 特性と系統の抵抗曲線（ΔP ∝ Q²）の交点として推定します。設定風量のときに出せる静圧が必要静圧以上なら、設定風量を確保できるとみなします（風量の配分と抵抗が設計どおりの前提。SPEC.md §7）。',
+        takeaway: '送風機の実際の運転点は、P–Q 特性と系統の抵抗曲線（ΔP ∝ Q²）の交点として推定します。設定風量のときに出せる静圧が必要静圧以上なら、設定風量を確保できるとみなします（風量の配分と抵抗が設計どおりの前提。SPEC.md §7）。'
+          + (K === 1 ? '' : `必要静圧は損失の合計に余裕率 K ${K.toFixed(2)} を掛けた値です。図の抵抗曲線と点は、余裕率を掛けない損失の合計で描いています。`),
       }
     }
   }

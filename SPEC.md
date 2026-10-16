@@ -129,7 +129,12 @@ Re     = v·D / ν          ν = μ / ρ、μ はサザーランドの式（μ0 
                           気温は calcSystem の 4 つ目の引数 { tempC }（省くと 20℃。payload.airTempC を渡す）
 Re < 2300   λ = 64 / Re（層流）
 Re ≥ 2300   1/√λ = −2·log₁₀(ε/(3.7·D) + 2.51/(Re·√λ))（Colebrook の式。2300〜4000 の遷移域も。層流の値より大きく安全側）
+            friction.formula が 'moody' なら λ = 0.0055·[1 + (20,000·ε/D + 10⁶/Re)^(1/3)]（Moody の近似式・0.4.0〜）
 ```
+
+`friction.formula`（0.4.0〜・任意）は粗さから λ を求める式です。省くと Colebrook。`'moody'` は Moody の近似式で、
+粗い管・普通の風速では Colebrook との差はおよそ 2% 以内（少し大きめ）。式を選んだときは `formulaSource`（式の出典）が要ります。
+使った式は `NodeResult.duct.formula` に入ります（Colebrook のときは入りません）。
 
 λ は風速で変わるので、直管の損失は風量の 2 乗には比例しません（2 倍の風量で 3.3〜3.9 倍程度）。ただし系統の抵抗曲線（§7 の k·Q²）は設計点を通す 2 乗のままです。
 フレキ・断熱チューブなど、粗さが決まらない管は、製品の λ をダクトの `lambda` に入れてください（粗さより優先）。縮めて施工したフレキの割り増しは扱いません。
@@ -152,6 +157,7 @@ L90(D) = 係数の表で、D に一番近い径の値（同じ近さなら小さ
 ```
 ΔP曲 = Σ ζ1個 × 個数 × q          （直管の損失 λ·(L/D)·q とは別に足す。λ によらない）
 ζ1個 = 曲がりの zeta（器材の ζ。その角度での値なので補正しない）
+       形に zetaByAngle（角度 → ζ。0.4.0〜）があれば、その表を角度で読んだ値（表の間は直線で補間・外は端の値）
        無ければ 形の ζ90 × 角度の補正（形はダクトの曲がりの shape。無ければ defaultShape）
 形の ζ90 = zeta90（全部の径で同じ値）
          または zeta90ByDiameter の、ダクトの径に一番近い径の値（同じ近さなら小さい径。相当長の表と同じ決まり）
@@ -207,7 +213,26 @@ L90(D) = 係数の表で、D に一番近い径の値（同じ近さなら小さ
 - 欄の無い保存データは `treeLeaf` として計算します（2026-10 までの決まり。**黙って意味を変えない**）。
   葉の側が太い形（吹出側で径が太くなる・吸込側で端末の側が太い）では遅い側の動圧に掛けることになるので、点検 `reducer-legacy-basis` で知らせます（§9）
 - 基準を選び直すと、同じ ζ でも圧損が変わります。出典の ζ を別の断面の動圧に換算するなら `ζ' = ζ × (D' / D)⁴`（D は出典の基準断面の径、D' は新しい基準断面の径。同じ風量で動圧は径の 4 乗に反比例するため）
-- 縮小か拡大かは**空気の流れの向き**で決まります（`reducerDiameters(nodes, node).change`）。ζ の値そのもの（径比・角度・縮小／拡大での違い）は使う側が出典から選びます。この部品は ζ を径比から求めません
+- 縮小か拡大かは**空気の流れの向き**で決まります（`reducerDiameters(nodes, node).change`）。ζ の値そのもの（径比・角度・縮小／拡大での違い）は使う側が出典から選びます。
+  係数に表を渡したときだけ、部品が面積比から ζ を求めます（次の節）
+
+### レジューサの ζ を表から求める（`DesignCoefficients.reducer`・0.4.0〜）
+
+係数に `reducer: { model: 'areaRatioTable', ... }` を渡し、部材に形 `form`（`'abrupt'` 急・段付き／`'gradual'` 漸・テーパー）があり、
+`zetaAuto` が false でなければ、ζ を表から求めます。このとき部材の `zeta`・`zetaBasis` は使いません。
+
+```
+面積比 = (流れの入口の径 ÷ 流れの出口の径)²   （拡大は 1 未満、縮小は 1 より大きい）
+ζ      = 表の線を面積比で読む（漸は角度 angleDeg の両側の角度の線で読み、角度で直線補間）
+ΔP     = ζ × q（流れの入口側の径の動圧）
+```
+
+- 表は 4 本: 急拡大 `abruptExpansion`・漸拡大 `gradualExpansion`（角度ごと）・急縮小 `abruptContraction`・漸縮小 `gradualContraction`（角度ごと）。漸の表が無ければ急の表を使います
+- **表の ζ は流れの入口側の動圧に対する値**として入れてください（拡大なら細い側、縮小なら太い側）。違う断面で定義された表は、上の換算で直してから入れます
+- 表の間は直線で補間し、表の外（面積比・角度）は端の値を使います。外だったときは `NodeResult.reducer.clamped` が true になり、点検 `reducer-table-range`（info）で知らせます
+- 径が変わらない・径が 0 のときは表を使わず、部材の ζ を使います
+- 係数が表を持つと、新しく置くレジューサの既定は `form: 'abrupt'` です。欄の無い保存データ（`form` が無い）は今までどおり部材の ζ で計算します
+- 使った値（ζ・出どころ・掛けた径・面積比・拡大か縮小か・表・角度・表の外か）は `NodeResult.reducer` に入ります
 
 手計算の例（ρ = 1.2、Q = 100 m³/h、ζ = 0.2）: φ100 の動圧 7.505 Pa → 1.501 Pa、φ150 の動圧 1.483 Pa → 0.297 Pa。
 吹出・吸込 × 縮小・拡大の 4 通りの検算は `__tests__/reducerBasis.test.ts`。
@@ -259,6 +284,20 @@ L90(D) = 係数の表で、D に一番近い径の値（同じ近さなら小さ
 ```
 
 **必要静圧 ＝ 上流側 ＋ 下流側** は定義上つねに成り立ちます。表示で内訳から足し直さないでください。
+
+### 余裕率 K（`payload.safetyFactor`・0.4.0〜）
+
+`calcSystem` の `fanRequiredPa`・第 2 送風機の `requiredPa` は**損失の合計**（上流側 ＋ 下流側）のままです。
+機器と比べる必要静圧は、保存データの余裕率 K を掛けた値です。
+
+```
+必要静圧 = 損失の合計 × K       K = payload.safetyFactor（無い・null・正の数でない値は 1）
+```
+
+- 判定（§7 `judgeMover` の 7 つ目の引数）・送風機の一覧（`collectMovers` の 4 つ目の引数）・点検（`diagnose`）は同じ K を使います
+- 運転点（系統の抵抗 k·Q²）は **K を掛けない損失**で求めます。K は機器を選ぶための余裕で、系統の抵抗そのものではないからです。
+  特性の範囲の外での確かめ（§7 の右端・左端）は、必要静圧と同じく K を掛けた値で比べます
+- K を渡さないとき・K = 1 のときの結果は 0.3.0 と同じです
 
 **複数の送風機**: 主送風機とエアコンは、それぞれが受け持つ区間で評価します。混合点（エアコンの入口）の圧力は室内と同じとみなし、
 送風機どうしの圧力・風量の相互作用は解きません。そのため 2 台の運転点（§7）は互いに整合しません。連成して解くのは将来の課題です。
@@ -354,6 +393,9 @@ L90(D) = 係数の表で、D に一番近い径の値（同じ近さなら小さ
 | `aircon-no-recirc` | warn | エアコンの REC が 0 |
 | `aircon-over-supply` | error | （リターン量を入れていないとき）熱交換器からの SA の入力が吹出の合計を超える |
 | `*-flow-short` | error | 設定風量を確保できない（§7 で ng） |
+| `*-margin-short` | warn | 余裕率 K を見込むと機器の静圧が足りない（§7 で ng だが、K を掛けない損失の合計なら出せる＝`marginOnly`。§6）（0.4.0〜） |
+| `safety-factor-invalid` / `safety-factor-below-one` / `safety-factor-large` | error / warn / warn | 余裕率 K が正の数でない（1 として計算）／1 未満／2 を超える（§6）（0.4.0〜） |
+| `reducer-table-range` | info | 径の変わり目の面積比・角度が係数の表の範囲の外で、表の端の値を使った（§4）（0.4.0〜） |
 | `*-no-characteristic` | info | 機器の特性が未入力で判定できない／判定を保留した（範囲の外・定格 1 点・交点が複数。理由は詳細に書く） |
 | `*-premise` | info | 判定は前提つきの合格（特性の範囲の外・定格より少ない風量。§7） |
 | `aircon-over-rated-flow` | warn | 循環風量がエアコンの定格風量（`maxStaticAtQh`）の 1.05 倍を超えている |
@@ -420,6 +462,8 @@ L90(D) = 係数の表で、D に一番近い径の値（同じ近さなら小さ
 - レジューサの `zetaBasis` は任意の欄です。無いデータは `treeLeaf`（2026-10 までの決まり）として計算し、保存データを書き換えません（§4）
 - 端末の `beforeBalance`（§10）と payload の `coefficientsStamp`（§2）、ダクトの `material`・曲がりの `shape`／`zeta`（§3）は任意の欄です。無いデータもそのまま計算できます
 - 送風機の `defaultLambda` は null を許します（係数の摩擦の求め方に従う。§3）
+- payload の `safetyFactor`（§6）、レジューサの `form`・`angleDeg`・`zetaAuto`（§4）は任意の欄です（0.4.0〜）。無いデータは 0.3.0 と同じに計算します
+- 係数の `zeta.terminalIntake`（吸込側に新しく置く端末の既定 ζ）、`friction.formula`、`reducer`、曲がりの形の `zetaByAngle`（角度ごとの ζ）は任意です（0.4.0〜）。渡さない係数の識別（`coefficientFingerprint`）は 0.3.0 と同じです
 
 ---
 
@@ -441,7 +485,8 @@ L90(D) = 係数の表で、D に一番近い径の値（同じ近さなら小さ
 
 係数に依らない関数（風量の集計・判定・点検・必要換気量・木の操作など）は、入口（`index.ts`）から直接使えます。
 レジューサの両端の径と ζ の基準断面の径は `reducerDiameters(nodes, node)`、呼び名は `REDUCER_ZETA_BASIS_LABELS`、運転点の一覧は `findOperatingPoints(特性, k)`、判定の前提の文は `VERDICT_PREMISE`。ダンパ調整の取り消しは `undoBalanceTerminals(system)`（係数を使わない）、版は `ENGINE_VERSION`、係数の識別は `coefficientFingerprint(係数)`。
-摩擦・曲がりの部品の関数は `colebrookLambda(Re, ε/D)`・`airKinematicViscosity(気温, ρ)`・`bendAngleFactor(係数, 角度)`・`bendZeta(係数, 曲がり)`。
+摩擦・曲がりの部品の関数は `colebrookLambda(Re, ε/D)`・`moodyLambda(Re, ε/D)`・`airKinematicViscosity(気温, ρ)`・`bendAngleFactor(係数, 角度)`・`bendZeta(係数, 曲がり)`。
+径の変わり目の表は `reducerTableZeta(係数, 入口の径, 出口の径, 形, 角度?)`・`interpolateCurve(線, x)`、余裕率は `usableSafetyFactor(値)`・`safetyFactorOf(payload)`（0.4.0〜）。
 
 ---
 

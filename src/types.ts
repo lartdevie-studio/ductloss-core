@@ -155,6 +155,16 @@ export interface ReducerParams {
    * 欄の無い保存データは 'treeLeaf'（2026-10 までの決まり）として計算し、意味を黙って変えない。
    */
   zetaBasis?: ReducerZetaBasis
+  /**
+   * 径の変わり目の形（0.4.0〜・任意）。係数に径の変わり目の表（DesignCoefficients.reducer）があり、
+   * zetaAuto を切っていなければ、ζ を面積比（と角度）から表で求め、流れの入口側の動圧に掛ける（zeta・zetaBasis は使わない）。
+   * 欄の無い保存データ・表の無い係数では、これまでどおり部材の ζ を使う
+   */
+  form?: 'abrupt' | 'gradual'
+  /** 漸拡大・漸縮小の角度（°）。form が 'gradual' のときに使う */
+  angleDeg?: number | null
+  /** false なら表を使わず部材の ζ を使う（器材カタログの値を入れたときなど）。省くと表を使う */
+  zetaAuto?: boolean
   catalogRef?: CatalogRef
 }
 
@@ -376,6 +386,11 @@ export interface DuctLossPayload {
    * それを計算書で知らせるための記録。2026-10 より前のデータには無い（不明として扱う）。
    */
   coefficientsStamp?: CoefficientsStamp
+  /**
+   * 送風機の余裕率 K（0.4.0〜・任意。SPEC.md §6）。必要静圧 ＝ 損失の合計 × K として機器と比べる。
+   * 運転点（系統の抵抗）は K を掛けない損失で求める。無い・null・正の数でないものは 1（0.3.0 までと同じ）
+   */
+  safetyFactor?: number | null
 }
 
 /** 設計係数と計算の版の記録（DuctLossPayload.coefficientsStamp・CalcResult.meta） */
@@ -411,6 +426,27 @@ export interface NodeResult {
    * 計算書・説明はここを読む（結果から逆算しない）。
    */
   duct?: DuctCalcDetail
+  /** 径の変わり目の計算に使った値（レジューサだけ・0.4.0〜） */
+  reducer?: ReducerCalcDetail
+}
+
+/** 径の変わり目の計算に使った値 */
+export interface ReducerCalcDetail {
+  /** 使った ζ */
+  zeta: number
+  /** ζ の出どころ: 係数の表／部材に入れた値 */
+  zetaSource: 'table' | 'node'
+  /** ζ を掛けた動圧の断面の径 (mm) */
+  basisMm: number
+  /** 流れの入口・出口の径 (mm) */
+  flowInletMm: number
+  flowOutletMm: number
+  /** 表で求めたときの値: 面積比（入口 ÷ 出口）・拡大か縮小か・使った表・表の外だったか */
+  areaRatio?: number
+  change?: 'expansion' | 'contraction'
+  table?: 'abrupt' | 'gradual'
+  angleDeg?: number
+  clamped?: boolean
 }
 
 /** 直管の計算に使った値 */
@@ -422,6 +458,8 @@ export interface DuctCalcDetail {
   /** 粗さから求めたときのレイノルズ数と材料の鍵 */
   reynolds?: number
   material?: string
+  /** 粗さから求めたときの式（0.4.0〜。省くのは Colebrook） */
+  formula?: 'colebrook' | 'moody'
   /** 直管の摩擦の圧損 (Pa)（λ·L/D·q） */
   frictionPa: number
   /** 曲がりの圧損 (Pa) */

@@ -52,11 +52,21 @@ function nodeName(sys: DuctSystem, id: string): string {
 /**
  * 1 系統ぶんの点検。
  */
-function diagnoseSystem(sys: DuctSystem, calc: CalcResult, rho: number): Issue[] {
+function diagnoseSystem(sys: DuctSystem, calc: CalcResult, rho: number, safetyFactor?: number | null): Issue[] {
   const out: Issue[] = []
   const push = (
     level: IssueLevel, key: string, title: string, detail: string, nodeId: string | null = null,
   ) => out.push({ id: `${sys.id}:${key}${nodeId ? `:${nodeId}` : ''}`, level, title, detail, systemId: sys.id, nodeId })
+
+  // 径の変わり目の ζ を表で求めたが、面積比・角度が表の外だった（端の値を使った）
+  for (const node of Object.values(sys.nodes)) {
+    const det = calc.byNode[node.id]?.reducer
+    if (det?.zetaSource === 'table' && det.clamped) {
+      push('info', 'reducer-table-range', '径の変わり目の面積比・角度が表の範囲の外です',
+        `「${node.label}」は面積比 ${det.areaRatio?.toFixed(2)}${det.angleDeg != null ? `・角度 ${det.angleDeg}°` : ''} で、`
+        + `係数の表の範囲の外のため、表の端の値（ζ ${det.zeta.toFixed(2)}）を使っています。器材の値があれば、ζ の決め方を「手入力」にして器材の ζ を入れてください。`, node.id)
+    }
+  }
 
   // ── 0. 木の形 ───────────────────────────────────────────
   // 形が崩れていると、ほかの点検も計算も意図と違う結果になる。先に知らせる。
@@ -319,7 +329,12 @@ function diagnoseSystem(sys: DuctSystem, calc: CalcResult, rho: number): Issue[]
   const pushVerdict = (
     v: MoverVerdict, label: string, nodeId: string, keyPrefix: string,
   ) => {
-    if (v.level === 'ng') {
+    if (v.level === 'ng' && v.marginOnly) {
+      // 余裕だけが足りない（余裕率 K を掛けない損失の合計なら機器が出せる）。ダクトを太くする話ではない
+      push('warn', `${keyPrefix}-margin-short`, '余裕率 K を見込むと機器の静圧が足りません',
+        `「${label}」: ${v.summary}。`
+        + '機器の能力（ノッチ・機種）を見直すか、余裕率 K の値を確かめてください。', nodeId)
+    } else if (v.level === 'ng') {
       push('error', `${keyPrefix}-flow-short`, '設定風量を確保できません',
         `「${label}」: ${v.summary}。`
         + 'ダクト径を上げる、経路を短くする、曲がりを減らす等の見直しが必要です。', nodeId)
@@ -354,7 +369,7 @@ function diagnoseSystem(sys: DuctSystem, calc: CalcResult, rho: number): Issue[]
         + '吹出端末の目標風量を見直すか、機器を上位機種にしてください。', m.nodeId)
     }
     pushVerdict(
-      judgeMover(m.requiredPa, m.circulationQh, m.maxStaticPa, m.pqPoints, m.maxStaticAtQh, rho),
+      judgeMover(m.requiredPa, m.circulationQh, m.maxStaticPa, m.pqPoints, m.maxStaticAtQh, rho, safetyFactor),
       m.label, m.nodeId, 'aircon',
     )
   }
@@ -370,6 +385,7 @@ function diagnoseSystem(sys: DuctSystem, calc: CalcResult, rho: number): Issue[]
         rootParams.pqPoints ?? null,
         rootParams.maxStaticAtQh ?? null,
         rho,
+        safetyFactor,
       ),
       sys.name, sys.rootId, 'fan',
     )
@@ -390,7 +406,23 @@ export function diagnose(
   for (const sys of payload.systems) {
     const calc = calcBySystem[sys.id]
     if (!calc) continue
-    out.push(...diagnoseSystem(sys, calc, payload.rho))
+    out.push(...diagnoseSystem(sys, calc, payload.rho, payload.safetyFactor))
+  }
+
+  // ── 4-00. 余裕率 K ─────────────────────────────────────
+  // 欄があって使えない値は 1 として計算している。1 未満・2 を超える値は入力の誤りを疑う（SPEC.md §6・§9）
+  const sf = payload.safetyFactor
+  if (sf !== undefined && sf !== null) {
+    if (!(typeof sf === 'number' && Number.isFinite(sf) && sf > 0)) {
+      out.push({ id: 'payload:safety-factor-invalid', level: 'error', title: '余裕率 K が正しくありません',
+        detail: '余裕率 K は正の数で入れてください。いまは 1 として計算しています。', systemId: null, nodeId: null })
+    } else if (sf < 1) {
+      out.push({ id: 'payload:safety-factor-below-one', level: 'warn', title: '余裕率 K が 1 未満です',
+        detail: `余裕率 K ${sf} は損失の合計より小さい必要静圧で機器を選ぶことになります。ふつうは 1 以上（1.1〜1.2 程度）です。`, systemId: null, nodeId: null })
+    } else if (sf > 2) {
+      out.push({ id: 'payload:safety-factor-large', level: 'warn', title: '余裕率 K が大きすぎます',
+        detail: `余裕率 K ${sf} は大きすぎる機器を選ぶもとになります（過大な送風機は騒音・電力が増えます）。入力を確かめてください。`, systemId: null, nodeId: null })
+    }
   }
 
   // ── 4-0. 必要換気量との照合 ──────────────────────────────

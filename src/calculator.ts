@@ -7,8 +7,8 @@ import type {
   SecondaryMover,
   FlowSide,
 } from './types'
-import { bendEquivLength90, bendZeta, type DesignCoefficients } from './coefficients'
-import { airKinematicViscosity, colebrookLambda } from './physics'
+import { bendEquivLength90, bendZeta, reducerTableZeta, type DesignCoefficients } from './coefficients'
+import { airKinematicViscosity, colebrookLambda, moodyLambda } from './physics'
 
 /** 計算の環境（SPEC.md §3）。粗さから λ を求めるときの気温（動粘性係数に使う）。省くと 20℃ */
 export interface CalcEnv {
@@ -101,13 +101,17 @@ export function calcNodeResult(
       let lambdaSource: 'duct' | 'fan' | 'coefficients' | 'roughness'
       let reynolds: number | undefined
       let material: string | undefined
+      let formula: 'colebrook' | 'moody' | undefined
       if (own != null) { effectiveLambda = own; lambdaSource = 'duct' }
       else if (fromFan != null) { effectiveLambda = fromFan; lambdaSource = 'fan' }
       else if (coef.friction?.model === 'roughness') {
         const key = node.params.material && coef.friction.materials[node.params.material] ? node.params.material : coef.friction.defaultMaterial
         const mat = coef.friction.materials[key]
         reynolds = v * (diameterMm / 1000) / airKinematicViscosity(env.tempC ?? 20, rho)
-        effectiveLambda = colebrookLambda(reynolds, (mat?.roughnessMm ?? 0) / diameterMm)
+        const rel = (mat?.roughnessMm ?? 0) / diameterMm
+        // 式を選んでいなければ Colebrook（0.3.0 までと同じ）。内訳の formula も、選んだときだけ書く
+        if (coef.friction.formula === 'moody') { effectiveLambda = moodyLambda(reynolds, rel); formula = 'moody' }
+        else effectiveLambda = colebrookLambda(reynolds, rel)
         lambdaSource = 'roughness'
         material = key
       } else { effectiveLambda = coef.lambda; lambdaSource = 'coefficients' }
@@ -119,7 +123,7 @@ export function calcNodeResult(
         const bendPa = bendZetaSum * q
         return {
           flowQh, velocity: v, q, dpPerMeter, lossPa: frictionPa + bendPa,
-          duct: { lambda: effectiveLambda, lambdaSource, reynolds, material, frictionPa, bendPa, bendModel: 'zeta', bendLengthM: 0, bendZeta: bendZetaSum, equivLengthM: lengthM },
+          duct: { lambda: effectiveLambda, lambdaSource, reynolds, material, ...(formula ? { formula } : {}), frictionPa, bendPa, bendModel: 'zeta', bendLengthM: 0, bendZeta: bendZetaSum, equivLengthM: lengthM },
         }
       }
       // 曲がりは最大3種（bends）の相当長を合算。旧データは bendAngleDeg/bendCount を1種扱い。
@@ -129,7 +133,7 @@ export function calcNodeResult(
       return {
         flowQh, velocity: v, q, dpPerMeter, lossPa: dpPerMeter * lEquiv,
         duct: {
-          lambda: effectiveLambda, lambdaSource, reynolds, material,
+          lambda: effectiveLambda, lambdaSource, reynolds, material, ...(formula ? { formula } : {}),
           frictionPa: dpPerMeter * lengthM, bendPa: dpPerMeter * bendLengthM, bendModel: 'equivalentLength',
           bendLengthM, bendZeta: diameterMm > 0 ? effectiveLambda * bendLengthM / (diameterMm / 1000) : 0, equivLengthM: lEquiv,
         },
@@ -151,11 +155,34 @@ export function calcNodeResult(
       return { flowQh, velocity: v, q, dpPerMeter: 0, lossPa: zeta * q }
     }
     case 'reducer': {
-      const { zeta } = node.params
+      const { zeta, form, angleDeg, zetaAuto } = node.params
+      const dia = reducerDiameters(nodes, node)
+      // 係数に表があり、部材に形が入っていて自動を切っていなければ、面積比（と角度）から表で ζ を求め、
+      // 流れの入口側の動圧に掛ける（SPEC.md §4・0.4.0〜）。それ以外は部材の ζ を基準断面の動圧に掛ける
+      if (coef.reducer && form && zetaAuto !== false) {
+        const t = reducerTableZeta(coef, dia.flowInletMm, dia.flowOutletMm, form, angleDeg)
+        if (t) {
+          const v = calcVelocity(flowQh, dia.flowInletMm)
+          const q = dynamicPressure(rho, v)
+          return {
+            flowQh, velocity: v, q, dpPerMeter: 0, lossPa: t.zeta * q,
+            reducer: {
+              zeta: t.zeta, zetaSource: 'table', basisMm: dia.flowInletMm, flowInletMm: dia.flowInletMm, flowOutletMm: dia.flowOutletMm,
+              areaRatio: t.areaRatio, change: t.change, table: t.table,
+              ...(t.table === 'gradual' && typeof angleDeg === 'number' ? { angleDeg } : {}),
+              clamped: t.clamped,
+            },
+          }
+        }
+      }
       // ζ の基準断面の径で動圧を求める（SPEC.md §4）。欄の無い保存データは木の葉の側（2026-10 までの決まり）
-      const v = calcVelocity(flowQh, reducerDiameters(nodes, node).referenceMm)
+      const v = calcVelocity(flowQh, dia.referenceMm)
       const q = dynamicPressure(rho, v)
-      return { flowQh, velocity: v, q, dpPerMeter: 0, lossPa: zeta * q }
+      return {
+        flowQh, velocity: v, q, dpPerMeter: 0, lossPa: zeta * q,
+        // 内訳は表を持つ係数のときだけ足す（表の無い係数の結果は 0.3.0 と同じ形のまま）
+        ...(coef.reducer ? { reducer: { zeta, zetaSource: 'node' as const, basisMm: dia.referenceMm, flowInletMm: dia.flowInletMm, flowOutletMm: dia.flowOutletMm } } : {}),
+      }
     }
     case 'aircon': {
       // エアコン本体の通過圧損。flowQh は循環風量。機外静圧の能力比較は別途。

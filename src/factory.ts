@@ -44,7 +44,10 @@ export function defaultParams(coef: DesignCoefficients, kind: NodeKind): NodePar
       return { kind: 'branch', diameterMm: 150, zeta: coef.zeta.branch }
     case 'reducer':
       // ζ は細い側（速い側）の動圧を基準にした値とする（縮小・拡大とも一般的な定義。SPEC.md §4）
-      return { kind: 'reducer', diameterFromMm: 150, diameterToMm: 100, zeta: coef.zeta.reducer, zetaBasis: 'small' }
+      // 係数に径の変わり目の表があれば、形「急（段付き）」で表から ζ を求める（0.4.0〜。SPEC.md §4）
+      return coef.reducer
+        ? { kind: 'reducer', diameterFromMm: 150, diameterToMm: 100, zeta: coef.zeta.reducer, zetaBasis: 'small', form: 'abrupt' }
+        : { kind: 'reducer', diameterFromMm: 150, diameterToMm: 100, zeta: coef.zeta.reducer, zetaBasis: 'small' }
     case 'aircon':
       return {
         kind: 'aircon',

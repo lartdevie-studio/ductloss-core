@@ -1,7 +1,13 @@
 # ductloss-core — specification summary (English)
 
 This is a summary of [SPEC.md](./SPEC.md). **The Japanese SPEC.md is authoritative**; section numbers below refer to it.
-Version 0.3.0, saved-data format schema v4.
+Version 0.4.0, saved-data format schema v4.
+
+**0.4.0 additions (all optional; without them results and fingerprints equal 0.3.0):** a per-record fan safety factor
+`payload.safetyFactor` (required pressure = total loss × K; the operating point uses the loss without K; `MoverVerdict.marginOnly`
+when only the margin is short), the Moody approximation for friction (`friction.formula: 'moody'`), reducer ζ from area-ratio
+tables applied to the flow-inlet dynamic pressure (`DesignCoefficients.reducer`, node `form`/`angleDeg`/`zetaAuto`), per-angle bend ζ
+(`zetaByAngle`) and a default ζ for intake-side terminals (`zeta.terminalIntake`). See SPEC.md §3, §4, §6, §9 and CHANGELOG.md.
 
 ## §0 Scope — this is a design calculation
 

@@ -46,6 +46,7 @@ export function addChild(
 
   const node = makeNode(coef, kind, { parentId, x: parent.x + dx, y: parent.y + dy })
   node.side = side
+  applyIntakeTerminalZeta(coef, node)
 
   return {
     nodes: {
@@ -55,6 +56,16 @@ export function addChild(
     },
     nodeId: node.id,
   }
+}
+
+/**
+ * 吸込側に新しく置いた端末には、係数に吸込側の既定（zeta.terminalIntake）があればそれを入れる（管の入口の損失。0.4.0〜）。
+ * 係数に無ければ何もしない（0.3.0 までと同じ）
+ */
+function applyIntakeTerminalZeta(coef: DesignCoefficients, node: DuctNode): void {
+  const intake = coef.zeta.terminalIntake
+  if (intake === undefined || node.side !== 'upstream' || node.params.kind !== 'terminal') return
+  node.params = { ...node.params, zeta: intake }
 }
 
 /**
@@ -81,6 +92,7 @@ export function insertOnEdge(
   const node = makeNode(coef, kind, { parentId, x: Math.round(mx), y: Math.round(my) })
   // 既存エッジの side（=childの side）を継承
   node.side = child.side ?? parent.side ?? 'downstream'
+  applyIntakeTerminalZeta(coef, node)
 
   // 親の childIds: child を node に置換
   const newParentChildIds = parent.childIds.map(id => (id === childId ? node.id : id))

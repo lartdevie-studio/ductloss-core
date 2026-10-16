@@ -32,6 +32,7 @@ export function createDuctLoss(coefficients: DesignCoefficients) {
     bendEquivLength90M: Object.freeze({ ...coefficients.bendEquivLength90M }),
     ...(coefficients.friction ? { friction: deepFreeze(deepCopy(coefficients.friction)) } : {}),
     ...(coefficients.bend ? { bend: deepFreeze(deepCopy(coefficients.bend)) } : {}),
+    ...(coefficients.reducer ? { reducer: deepFreeze(deepCopy(coefficients.reducer)) } : {}),
     ...(coefficients.notes ? { notes: Object.freeze([...coefficients.notes]) } : {}),
   })
   const stamp = Object.freeze(coefficientsStampOf(coef))

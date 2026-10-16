@@ -12,6 +12,7 @@
  * どの係数で計算したかが計算書から読めないと、第三者が照合できない（SPEC.md §2）。
  */
 
+import { safetyFactorOf } from './verdict'
 import type {
   DuctDiameter,
   DuctLossPayload,
@@ -193,10 +194,13 @@ export function collectCalcConditions(coef: DesignCoefficients, payload: DuctLos
   const lambdaSources = new Map<number, Set<string>>()
   const rough = new Map<string, number[]>()   // 材料 → 求めた λ
   const ductDetails: { D: number; detail: NonNullable<ReturnType<typeof calcSystem>['byNode'][string]['duct']>; node: DuctNode }[] = []
+  const reducerDetails: NonNullable<ReturnType<typeof calcSystem>['byNode'][string]['reducer']>[] = []
   for (const system of payload.systems) {
     if (!system.nodes[system.rootId]) continue
     const calc = calcSystem(coef, system, payload.rho, 1, { tempC })
     for (const node of Object.values(system.nodes)) {
+      const red = node.params.kind === 'reducer' ? calc.byNode[node.id]?.reducer : undefined
+      if (red) reducerDetails.push(red)
       if (node.params.kind !== 'duct') continue
       const det = calc.byNode[node.id]?.duct
       if (!det) continue
@@ -233,7 +237,8 @@ export function collectCalcConditions(coef: DesignCoefficients, payload: DuctLos
     rows.push({
       label: '摩擦係数 λ（粗さから）',
       value: parts.join(' ／ '),
-      note: `直管ごとに Colebrook の式で求める（風速で変わる）。動粘性係数は ${tempC}℃ の空気。出典: ${sources.join('／')}`,
+      note: `直管ごとに ${fr.formula === 'moody' ? 'Moody の近似式' : 'Colebrook の式'}で求める（風速で変わる）。動粘性係数は ${tempC}℃ の空気。`
+        + `出典: ${sources.join('／')}${fr.formula === 'moody' && fr.formulaSource ? `／式: ${fr.formulaSource}` : ''}`,
     })
   }
 
@@ -254,7 +259,18 @@ export function collectCalcConditions(coef: DesignCoefficients, payload: DuctLos
   }
 
   // レジューサの ζ と、ζ を掛ける動圧の断面（SPEC.md §4）
+  // 係数の表から ζ を求めたレジューサ（0.4.0〜）は別の行。部材に入れた ζ のレジューサだけを下の行に載せる
+  const fromTable = reducerDetails.filter(r => r.zetaSource === 'table')
+  if (fromTable.length > 0 && coef.reducer) {
+    const zs = distinctSorted(fromTable.map(r => Number(r.zeta.toFixed(2))))
+    rows.push({
+      label: 'レジューサの ζ（表から）',
+      value: joinNums(zs),
+      note: `面積比（流れの入口 ÷ 出口）と形（急・漸と角度）から表で求め、流れの入口側の動圧に掛ける。表の間は直線で補間し、表の外は端の値。出典: ${coef.reducer.source}`,
+    })
+  }
   const reducers = payload.systems.flatMap(s => Object.values(s.nodes)).filter(n => n.params.kind === 'reducer')
+    .filter(n => !(coef.reducer && (n.params as { form?: string; zetaAuto?: boolean }).form && (n.params as { zetaAuto?: boolean }).zetaAuto !== false))
   if (reducers.length > 0) {
     const zetas = distinctSorted(reducers.map(n => (n.params as { zeta: number }).zeta))
     const bases = [...new Set(reducers.map(n => {
@@ -291,6 +307,11 @@ export function collectCalcConditions(coef: DesignCoefficients, payload: DuctLos
           ? Object.entries(sh.zeta90ByDiameter).map(([d, v]) => [Number(d), v] as const).sort((a, b) => a[0] - b[0])
               .map(([d, v]) => `φ${d} ${formatCoefficient(v)}`).join('・')
           : formatCoefficient(sh.zeta90 ?? 0)
+        if (sh.zetaByAngle) {
+          const byA = Object.entries(sh.zetaByAngle).map(([a, v]) => [Number(a), v] as const).sort((x, y) => x[0] - y[0])
+            .map(([a, v]) => `${a}° ${formatCoefficient(v)}`).join('・')
+          return `${sh.label} ζ ${byA}（角度ごと）`
+        }
         return `${sh.label} ζ90 ${z}${sh.angleProportional ? '（角度は θ/90）' : ''}`
       }
       const shapes = [...used].map(zetaText)
@@ -317,6 +338,16 @@ export function collectCalcConditions(coef: DesignCoefficients, payload: DuctLos
   const bendRows = usedDiameters.map(d => `φ${d} = ${formatCoefficient(bendEquivLength90(coef, d))} m`)
   if (bendRows.length > 0 && coef.bend?.model !== 'zeta') {
     rows.push({ label: '曲がり相当長', value: `90° ${bendRows.join(' ／ ')}`, note: '設計係数の表（一番近い径の値）。角度に比例配分' })
+  }
+
+  // 送風機の余裕率 K（0.4.0〜）。記録のあるデータだけ載せる（記録の無いデータは 1 で、計算書も 0.3.0 と同じ）
+  if (payload.safetyFactor != null) {
+    const K = safetyFactorOf(payload)
+    rows.push({
+      label: '送風機の余裕率 K',
+      value: K.toFixed(2),
+      note: '必要静圧 ＝ 損失の合計（上流側 ＋ 下流側）× K として機器と比べる。運転点は K を掛けない損失で推定する',
+    })
   }
 
   // 計算の性格（改良計画 2-1）。設計計算であって、実際の風量配分や運転を解いたものではない

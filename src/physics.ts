@@ -59,3 +59,16 @@ export function colebrookLambda(re: number, relRoughness: number): number {
   }
   return lam
 }
+
+/**
+ * 摩擦係数 λ を Moody の近似式で求める（SPEC.md §3・0.4.0〜）。
+ *   λ = 0.0055·[1 + (20,000·ε/D + 10⁶/Re)^(1/3)]
+ * 粗い管・普通の風速では Colebrook の式との差はおよそ 2% 以内（Colebrook より少し大きめ）。
+ * Re < 2300 は層流 64/Re、Re ≤ 0 は 0（colebrookLambda と同じ決まり）
+ */
+export function moodyLambda(re: number, relRoughness: number): number {
+  if (!(re > 0) || !Number.isFinite(re)) return 0
+  if (re < 2300) return 64 / re
+  const rr = Math.max(0, relRoughness)
+  return 0.0055 * (1 + Math.cbrt(20000 * rr + 1e6 / re))
+}

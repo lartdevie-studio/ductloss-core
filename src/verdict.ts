@@ -45,8 +45,17 @@ export interface MoverVerdict {
   basis: VerdictBasis
   /** 設定風量 (m³/h) */
   designQh: number
-  /** 必要静圧 (Pa) */
+  /** 必要静圧 (Pa)。損失の合計 × 余裕率 K（K が 1 なら損失の合計そのもの） */
   requiredPa: number
+  /** 損失の合計 (Pa)（上流側 + 下流側。K を掛ける前・0.4.0〜） */
+  lossPa: number
+  /** 余裕率 K（0.4.0〜。渡さなければ 1） */
+  safetyFactor: number
+  /**
+   * 足りないのは余裕だけか（0.4.0〜）。level が 'ng' で、K を掛けない損失の合計なら機器が出せる（設定風量は出る見込み）とき true。
+   * 画面・点検は「風量不足」ではなく「余裕不足」と言う（ダクト径を上げる助言は当てはまらない）
+   */
+  marginOnly: boolean
   /** 設定風量で機器が出せる機外静圧 (Pa)。分からなければ null */
   availableStaticPa: number | null
   /** 設定風量での余裕 = 出せる静圧 − 必要静圧。負なら足りない */
@@ -55,7 +64,7 @@ export interface MoverVerdict {
   operating: PQPoint | null
   /** 運転点の風量 ÷ 設定風量。1.0 で過不足なし */
   flowRatio: number | null
-  /** 系統の抵抗係数 k（ΔP = k·Q²） */
+  /** 系統の抵抗係数 k（ΔP = k·Q²）。K を掛けない損失の合計から求める（運転点はこの k で求める） */
   k: number
   /** 判定の但し書き（風量が違う・情報が足りない・前提つき等）。無ければ null */
   caveat: string | null
@@ -109,10 +118,20 @@ function characteristicPoints(
   return { pts: [], basis: 'none' }
 }
 
+/** 余裕率 K として使える値（正の有限の数）。使えなければ 1（SPEC.md §6） */
+export function usableSafetyFactor(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 1
+}
+
+/** 保存データの余裕率 K（欄が無い・使えない値なら 1） */
+export function safetyFactorOf(payload: { safetyFactor?: number | null } | null | undefined): number {
+  return usableSafetyFactor(payload?.safetyFactor)
+}
+
 /**
  * 送風機 1 台の合否を出す。
  *
- * @param requiredPa    必要静圧（上流側 + 下流側）
+ * @param lossPa        損失の合計（上流側 + 下流側）。必要静圧はこれに余裕率 K を掛けた値
  * @param designQh      設定風量（この送風機を通る風量）
  * @param maxStaticPa   機器の機外静圧。未設定は null
  * @param pqPoints      機器の P-Q 特性（カタログの点列）。未設定は null
@@ -120,14 +139,21 @@ function characteristicPoints(
  * @param rho           計算の空気密度。渡せば機器の特性を ρ / 1.20 倍にして比べる（特性は標準空気の値とみなす。SPEC.md §7）
  */
 export function judgeMover(
-  requiredPa: number,
+  lossPa: number,
   designQh: number,
   maxStaticPa: number | null,
   pqPoints: PQPoint[] | null | undefined,
   maxStaticAtQh?: number | null,
   rho?: number,
+  /** 余裕率 K（0.4.0〜）。省くと 1（0.3.0 までと同じ結果） */
+  safetyFactor?: number | null,
 ): MoverVerdict {
-  const k = systemResistanceK(requiredPa, designQh)
+  // 余裕率 K: 機器と比べる必要静圧は 損失の合計 × K。運転点（系統の抵抗 k）は K を掛けない損失で求める（SPEC.md §6・§7）。
+  // 特性の範囲の外での確かめ（右端・左端）は、必要静圧と同じく K を掛けた抵抗 kReq で比べる。K = 1 なら k と同じ
+  const safety = usableSafetyFactor(safetyFactor)
+  const requiredPa = lossPa * safety
+  const k = systemResistanceK(lossPa, designQh)
+  const kReq = safety === 1 ? k : systemResistanceK(requiredPa, designQh)
   const densityRatio = rho != null && rho > 0 && Number.isFinite(rho) ? rho / CHARACTERISTIC_RHO : 1
   const scaled = Math.abs(densityRatio - 1) > 1e-9
   const raw = characteristicPoints(maxStaticPa, maxStaticAtQh, pqPoints)
@@ -138,7 +164,7 @@ export function judgeMover(
     : VERDICT_PREMISE
 
   const base = {
-    designQh, requiredPa, k, premise, densityRatio,
+    designQh, requiredPa, lossPa, safetyFactor: safety, marginOnly: false, k, premise, densityRatio,
     availableStaticPa: null as number | null,
     marginPa: null as number | null,
     operating: null as PQPoint | null,
@@ -174,6 +200,15 @@ export function judgeMover(
   if (basis === 'flatMax') {
     const maxPa = pts[0].p   // 空気密度の倍率を掛けた値（maxStaticPa そのものではない）
     if (requiredPa > maxPa) {
+      if (safety !== 1 && lossPa <= maxPa + 1e-9) {
+        return {
+          ...base, level: 'ng', basis, marginOnly: true,
+          availableStaticPa: maxPa, marginPa: maxPa - requiredPa,
+          caveat: '機外静圧がどの風量での値か未入力です。損失の合計は機外静圧以内ですが、余裕率 K を見込んだ必要静圧には届きません',
+          summary: `必要静圧 ${fmtP(requiredPa)} Pa（損失の合計 ${fmtP(lossPa)} Pa × 余裕率 ${safety.toFixed(2)}）が機外静圧 ${fmtP(maxPa)} Pa を超えています`
+            + ' → 余裕率 K を見込むと足りません（損失の合計は機外静圧以内）',
+        }
+      }
       return {
         ...base, level: 'ng', basis,
         availableStaticPa: maxPa, marginPa: maxPa - requiredPa,
@@ -208,8 +243,10 @@ export function judgeMover(
     // 点列は normalizeFanPoints で同じ風量の重複を後勝ちで 1 点にしてあるので、
     // 右端の点は interpFanP / findOperatingPoint が見る点と同じ。
     const right = pts.reduce((a, b) => (b.q >= a.q ? b : a))
-    const needAtRight = k * right.q * right.q
-    if (right.p < needAtRight - 1e-9) {
+    const needAtRight = kReq * right.q * right.q
+    // 余裕率 K を掛けない損失なら右端で足りているときは、余裕だけの話で、設定風量（範囲の外）の風量は読めない → 下の「判定できない」へ
+    const shortWithoutMargin = safety === 1 || right.p < k * right.q * right.q - 1e-9
+    if (right.p < needAtRight - 1e-9 && shortWithoutMargin) {
       const operating = findOperatingPoints(pts, k)[0] ?? null
       const flowRatio = operating ? operating.q / qh : null
       return {
@@ -344,7 +381,8 @@ export function judgeMover(
       // 定格より多い風量。出せる静圧は定格値より小さいはずで、どれだけ小さいかは 1 点では分からない。
       caveat = `設定風量 ${fmtQ(qh)} m³/h は定格風量 ${fmtQ(ratedQ)} m³/h を超えています。`
         + 'この風量で出せる静圧は定格値より小さくなるため、P-Q 特性を入れないと判定できません'
-      if (ok) {
+      // 余裕率 K を掛けない損失の合計なら定格点で足りているときも、K を掛けないときと同じく「判定できない」（設定風量では読めない）
+      if (ok || (safety !== 1 && rated.p >= lossPa - 1e-9)) {
         return {
           ...base, level: 'insufficient', basis,
           availableStaticPa: null, marginPa: null, operating: null, flowRatio: null,
@@ -368,19 +406,24 @@ export function judgeMover(
 
   const parts: string[] = []
   parts.push(`設定風量 ${fmtQ(qh)} m³/h で機器が出せる静圧 ${fmtP(availableStaticPa)} Pa`)
-  parts.push(`必要静圧 ${fmtP(requiredPa)} Pa`)
+  parts.push(safety === 1 ? `必要静圧 ${fmtP(requiredPa)} Pa` : `必要静圧 ${fmtP(requiredPa)} Pa（損失の合計 ${fmtP(lossPa)} Pa × 余裕率 ${safety.toFixed(2)}）`)
   if (operating) {
     parts.push(`運転点 ${fmtQ(operating.q)} m³/h・${fmtP(operating.p)} Pa`
       + (flowRatio != null ? `（設定風量の ${(flowRatio * 100).toFixed(0)}%）` : ''))
   }
+  // 余裕だけが足りない（K を掛けない損失の合計なら出せる）ときは、風量が出ないとは言わない
+  const marginOnly = !ok && safety !== 1 && availableStaticPa >= lossPa - 1e-9
   parts.push(ok
     ? `→ 設定風量を確保できます（余裕 ${fmtP(marginPa)} Pa）`
-    : `→ 設定風量を確保できません（${fmtP(-marginPa)} Pa 不足）`)
+    : marginOnly
+      ? `→ 余裕率 ${safety.toFixed(2)} を見込むと ${fmtP(-marginPa)} Pa 足りません（余裕を見込まなければ設定風量は出る見込み）`
+      : `→ 設定風量を確保できません（${fmtP(-marginPa)} Pa 不足）`)
 
   return {
     ...base,
     level,
     basis,
+    marginOnly,
     availableStaticPa,
     marginPa,
     operating,

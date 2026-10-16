@@ -14,8 +14,9 @@
 // 計算一式（係数を結び付ける入口）
 export { createDuctLoss, type DuctLossEngine } from './engine'
 export {
-  validateCoefficients, coefficientFingerprint, bendAngleFactor, bendZeta, bendShapeZeta90,
-  type DesignCoefficients, type FrictionModel, type BendModel, type DuctMaterial, type BendShape,
+  validateCoefficients, coefficientFingerprint, bendAngleFactor, bendZeta, bendShapeZeta90, interpolateCurve, reducerTableZeta,
+  type DesignCoefficients, type FrictionModel, type FrictionFormula, type BendModel, type DuctMaterial, type BendShape,
+  type ReducerModel, type ReducerForm, type CoefficientCurve,
 } from './coefficients'
 export { ENGINE_VERSION } from './version'
 
@@ -27,7 +28,7 @@ export {
 export { NODE_KIND_LABEL, routeEndLabel, coefficientsStampOf } from './factory'
 
 // 空気
-export { RHO_DEFAULT, CHARACTERISTIC_RHO, airDensity, airKinematicViscosity, colebrookLambda } from './physics'
+export { RHO_DEFAULT, CHARACTERISTIC_RHO, airDensity, airKinematicViscosity, colebrookLambda, moodyLambda } from './physics'
 
 // 木の操作・走査・径の読み取り（部材を足す操作は createDuctLoss の addChild / insertOnEdge）
 export {
@@ -47,7 +48,7 @@ export {
   findOperatingPoint, findOperatingPoints, resistanceAtFlow, type PQPoint,
 } from './pqcurve'
 export {
-  systemResistanceK, judgeMover, VERDICT_PREMISE, type VerdictLevel, type VerdictBasis, type MoverVerdict,
+  systemResistanceK, judgeMover, usableSafetyFactor, safetyFactorOf, VERDICT_PREMISE, type VerdictLevel, type VerdictBasis, type MoverVerdict,
 } from './verdict'
 export {
   ACH_DEFAULT, makeDefaultVentilation, resolveVolumeM3, requiredVentilationQh, isCirculationSystem,

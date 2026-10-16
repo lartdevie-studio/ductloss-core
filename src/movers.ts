@@ -1,6 +1,6 @@
 import type { CalcResult, DuctSystem } from './types'
 import type { PQPoint } from './pqcurve'
-import { judgeMover, type MoverVerdict } from './verdict'
+import { judgeMover, usableSafetyFactor, type MoverVerdict } from './verdict'
 
 // ─────────────────────────────────────────────────────────────
 // 送風機（検討単位）の抽出
@@ -36,8 +36,12 @@ export interface MoverRow {
   upstreamPa: number
   /** 下流側（吹出）の必要静圧 */
   downstreamPa: number
-  /** 必要静圧 = 上流 + 下流 */
+  /** 必要静圧 = （上流 + 下流）× 余裕率 K（K が 1 なら上流 + 下流） */
   requiredPa: number
+  /** 損失の合計 = 上流 + 下流（K を掛ける前・0.4.0〜） */
+  lossPa: number
+  /** 余裕率 K（0.4.0〜。渡さなければ 1） */
+  safetyFactor: number
   /** 機器の最大静圧（未設定は null） */
   maxStaticPa: number | null
   /** 機器の P-Q 特性（未設定は null） */
@@ -93,8 +97,11 @@ export function collectMovers(
   calcBySystem: Record<string, CalcResult>,
   /** 計算の空気密度。省くと計算結果の meta の ρ を使う（機器の特性を ρ/1.20 倍にして比べる。SPEC.md §7） */
   rho?: number,
+  /** 余裕率 K（保存データの safetyFactor。SPEC.md §6）。省くと 1 */
+  safetyFactor?: number | null,
 ): MoverRow[] {
   const rows: MoverRow[] = []
+  const K = usableSafetyFactor(safetyFactor)
 
   for (const sys of systems) {
     const calc = calcBySystem[sys.id]
@@ -125,10 +132,12 @@ export function collectMovers(
       flowQh:       calc.fanFlowQh,
       upstreamPa:   calc.fanUpstreamPa,
       downstreamPa: calc.fanDownstreamPa,
-      requiredPa:   calc.fanRequiredPa,
+      requiredPa:   calc.fanRequiredPa * K,
+      lossPa:       calc.fanRequiredPa,
+      safetyFactor: K,
       maxStaticPa:  rootMaxStaticPa,
       pqPoints:     rootPqPoints,
-      verdict:      judgeMover(calc.fanRequiredPa, calc.fanFlowQh, rootMaxStaticPa, rootPqPoints, rootMaxStaticAtQh, airRho),
+      verdict:      judgeMover(calc.fanRequiredPa, calc.fanFlowQh, rootMaxStaticPa, rootPqPoints, rootMaxStaticAtQh, airRho, K),
       isPrimary:    true,
       isAircon:     isAirconRoot,
       split:        null,
@@ -145,10 +154,12 @@ export function collectMovers(
         flowQh:       m.circulationQh,
         upstreamPa:   m.intakeCriticalPa,
         downstreamPa: m.supplyCriticalPa,
-        requiredPa:   m.requiredPa,
+        requiredPa:   m.requiredPa * K,
+        lossPa:       m.requiredPa,
+        safetyFactor: K,
         maxStaticPa:  m.maxStaticPa,
         pqPoints:     m.pqPoints,
-        verdict:      judgeMover(m.requiredPa, m.circulationQh, m.maxStaticPa, m.pqPoints, m.maxStaticAtQh, airRho),
+        verdict:      judgeMover(m.requiredPa, m.circulationQh, m.maxStaticPa, m.pqPoints, m.maxStaticAtQh, airRho, K),
         isPrimary:    false,
         isAircon:     true,
         split:        { fromHexQh: m.supplyFromHexQh, recircQh: m.intakeQh },

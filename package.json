@@ -1,6 +1,6 @@
 {
   "name": "@monosashi/ductloss-core",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "license": "MIT",
   "description": "住宅の換気・ダクト空調の圧損計算（ダルシー・ワイスバッハ／ζ·q、風量の集計、送風機の合否判定、点検、機能の入／切）。設計係数は使う側が渡す。",

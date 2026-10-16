@@ -2,6 +2,29 @@
 
 版の付け方: 計算の結果が変わる変更は minor 以上（0.x のあいだは minor）、結果が変わらない直しは patch。
 
+## 0.4.0 — 2026-10-15
+
+係数で選べる計算の方法を 4 つと、送風機の余裕率 K を足した版。**保存データの意味は変えていません**
+（新しい欄はどれも任意で、欄の無いデータ・欄を渡さない係数の結果と識別は 0.3.0 と同じ）。
+
+### 足したもの
+
+- **余裕率 K**（`payload.safetyFactor`。SPEC §6）: 必要静圧 ＝ 損失の合計 × K。運転点は K を掛けない損失で求める。
+  `judgeMover` の 7 つ目の引数・`collectMovers` の 4 つ目の引数・`diagnose`（保存データから）。`MoverVerdict` と `MoverRow` に `lossPa`（損失の合計）と `safetyFactor`。
+  `usableSafetyFactor`・`safetyFactorOf`。点検 `safety-factor-invalid`（error）・`safety-factor-below-one`・`safety-factor-large`（warn）。計算書の条件の表に K の行（欄のあるデータだけ）。
+  `MoverVerdict.marginOnly`: 足りないのが余裕だけ（K を掛けない損失の合計なら機器が出せる）とき true。要約は「設定風量を確保できません」ではなく「余裕率を見込むと足りません」と書き、点検は `*-margin-short`（warn）。
+  特性の範囲の外・定格 1 点で、K を掛けなければ足りるときは「判定できない」（K を掛けないときと同じ扱い）
+- **Moody の近似式**（`friction.formula: 'moody'`・`moodyLambda`）: λ = 0.0055·[1 + (20,000·ε/D + 10⁶/Re)^(1/3)]。`NodeResult.duct.formula`
+- **レジューサの ζ を表から**（`DesignCoefficients.reducer`。SPEC §4）: 面積比と形（急・漸と角度）から表で ζ を求め、流れの入口側の動圧に掛ける。
+  部材の `form`・`angleDeg`・`zetaAuto`、`NodeResult.reducer`、`reducerTableZeta`・`interpolateCurve`、点検 `reducer-table-range`（info）
+- **角度ごとの曲がりの ζ**（曲がりの形の `zetaByAngle`）: 突付エルボのように角度ごとの値が表で決まっている形
+- **吸込側の端末の既定 ζ**（`zeta.terminalIntake`）: 吸込側に新しく置く端末（`addChild`・`insertOnEdge`）に入る（管の入口の損失）
+
+### 変えたもの（使う側の書き直しが要る）
+
+- `judgeMover` の 1 つ目の引数の意味を「損失の合計」と明記した（K を渡さなければ今までどおり必要静圧と同じ値）
+- `MoverRow.requiredPa` は損失の合計 × K（K を渡さなければ今までと同じ）
+
 ## 0.3.0 — 2026-10-10
 
 曲がりを ζ で持つ係数に、径ごとの ζ と、形ごとの角度の扱いを足した版。**保存データの意味は変えていません**。
